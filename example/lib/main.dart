@@ -5,8 +5,8 @@ import 'package:screenshot_share/screenshot_share.dart';
 void main() {
   // Configure the screenshot package
   ScreenshotConfig.configure(
-    telegramToken: '5857531142:AAF7dcQRgCK5wQWGIPL_gk3UaWz3nFmnfFg',
-    telegramChatId: '793933959',
+    telegramToken: '',
+    telegramChatId: '',
     shareMode: ShareMode.multiple,
     imageQuality: 90,
     showButtonsInDebugOnly: false, // Show in all build modes for the example
