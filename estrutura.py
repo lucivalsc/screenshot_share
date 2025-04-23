@@ -45,7 +45,7 @@ directory_structure = {
 }
 
 # Defina o caminho base onde deseja criar a estrutura
-base_path = r"C:\Projetos\Flutter\Lucival\screenshot_share"
+base_path = r"C:\Projetos\Flutter\Lucival\screenshot_share_telegram"
 
 create_structure(base_path, directory_structure)
 

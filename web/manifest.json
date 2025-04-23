@@ -1,6 +1,6 @@
 {
-    "name": "screenshot_share",
-    "short_name": "screenshot_share",
+    "name": "screenshot_share_telegram",
+    "short_name": "screenshot_share_telegram",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

@@ -1,4 +1,4 @@
-name: screenshot_share
+name: screenshot_share_telegram
 description: A Flutter package for capturing screenshots and sharing them via Telegram, local storage, or sharing with other apps.
 version: 0.1.0
 homepage: https://github.com/lucivalsc/screenshot_share.git

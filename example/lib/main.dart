@@ -1,6 +1,6 @@
 // Exemplo de uso do pacote
 import 'package:flutter/material.dart';
-import 'package:screenshot_share/screenshot_share.dart';
+import 'package:screenshot_share_telegram/screenshot_share.dart';
 
 void main() {
   // Configure the screenshot package
