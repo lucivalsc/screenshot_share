@@ -84,7 +84,7 @@ class ScreenshotManagerService {
       }
 
       // Capture the image
-      final boundary = renderObject as RenderRepaintBoundary;
+      final boundary = renderObject;
       final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
       final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
 
@@ -141,7 +141,7 @@ class ScreenshotManagerService {
         // Create screenshot data object
         final screenshot = ScreenshotData(
           bytes: Uint8List.fromList(jpegBytes),
-          filename: '${screenName}_${timestamp}_${suffix}.jpg',
+          filename: '${screenName}_${timestamp}_$suffix.jpg',
           width: width,
           height: height,
           group: captureId,
