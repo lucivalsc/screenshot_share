@@ -4,14 +4,14 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:http/http.dart' as http;
-import 'package:image/image.dart' as img;
 
 import '../config/screenshot_config.dart';
 import '../enums/share_mode.dart';
 import '../models/screenshot_data.dart';
 import '../widgets/screenshot_wrapper.dart';
 import 'storage_service.dart';
+import '../utils/image_processor.dart';
+import 'telegram_service.dart';
 
 /// Service for capturing and immediately sharing screenshots (single-button mode)
 class ScreenshotService {
@@ -32,7 +32,7 @@ class ScreenshotService {
     ShareMode? overrideShareMode,
   }) {
     final config = ScreenshotConfig();
-    
+
     return ScreenshotWrapper(
       mostrarBotao: showButton ?? config.shouldShowButtons,
       posicaoBotao: buttonPosition ?? Alignment.bottomRight,
@@ -49,6 +49,8 @@ class ScreenshotService {
     int? quality,
     List<Map<String, dynamic>>? customSizes,
     ShareMode? overrideMode,
+    Function(String error)? onError,
+    Function()? onSuccess,
   }) async {
     // Prevent multiple simultaneous operations
     if (_isProcessing) return false;
@@ -57,171 +59,120 @@ class ScreenshotService {
     try {
       final config = ScreenshotConfig();
       final screenName = customName ?? config.fileNamePrefix;
-      final imageQuality = quality ?? config.imageQuality;
       final screenSizes = customSizes ?? config.screenSizes;
+      final imageQuality = quality ?? config.imageQuality;
       final shareMode = overrideMode ?? config.shareMode;
-      
+
       debugPrint('📸 Starting screen capture and share: "$screenName"...');
 
-      // Get the RenderRepaintBoundary
+      // 1. Capture Image from RepaintBoundary
       final renderObject = repaintKey.currentContext?.findRenderObject();
       if (renderObject == null || renderObject is! RenderRepaintBoundary) {
-        debugPrint('❌ Could not find RenderRepaintBoundary');
-        _isProcessing = false;
+        _handleError('Could not find RenderRepaintBoundary', onError);
         return false;
       }
 
-      // Capture the image
       final boundary = renderObject;
       final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
-      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      final ByteData? byteData =
+          await image.toByteData(format: ui.ImageByteFormat.png);
 
       if (byteData == null) {
-        debugPrint('❌ Failed to get ByteData from image');
-        _isProcessing = false;
+        _handleError('Failed to get ByteData from image', onError);
         return false;
       }
 
       final Uint8List pngBytes = byteData.buffer.asUint8List();
-      debugPrint('📸 Captured image: ${pngBytes.length} bytes');
+      debugPrint('📸 Captured raw image: ${pngBytes.length} bytes');
 
-      // Decode the image
-      final img.Image? decodedImage = img.decodePng(pngBytes);
-      if (decodedImage == null) {
-        debugPrint('❌ Failed to decode PNG image');
-        _isProcessing = false;
+      // 2. Process Image (Resize & Encode) in Background Isolate
+      debugPrint('📸 Processing images in background isolate...');
+      final ImageProcessor processor = ImageProcessor();
+      final List<ScreenshotData> screenshots = await processor.processImage(
+        pngBytes: pngBytes,
+        screenName: screenName,
+        screenSizes: screenSizes,
+        imageQuality: imageQuality,
+      );
+
+      if (screenshots.isEmpty) {
+        _handleError('Failed to process screenshots (list is empty)', onError);
         return false;
       }
 
-      debugPrint('📸 Original image: ${decodedImage.width}x${decodedImage.height}');
-
-      // Timestamp for this capture
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final captureId = '${screenName}_$timestamp';
-      
-      // Create list for screenshots
-      List<ScreenshotData> screenshots = [];
-
-      // Resize for all screen sizes
-      debugPrint('📸 Resizing for ${screenSizes.length} different screen sizes...');
-
-      for (int i = 0; i < screenSizes.length; i++) {
-        final size = screenSizes[i];
-        final width = size['width'] as int;
-        final height = size['height'] as int;
-        final suffix = size['suffix'] as String;
-
-        debugPrint('📸 Resizing to $width x $height...');
-
-        // Resize the image
-        final resizedImage = img.copyResize(
-          decodedImage,
-          width: width,
-          height: height,
-          interpolation: img.Interpolation.linear,
-        );
-
-        // Encode to JPEG
-        final jpegBytes = img.encodeJpg(resizedImage, quality: imageQuality);
-
-        debugPrint('📸 Image ${i + 1} resized: $width x $height (${jpegBytes.length} bytes)');
-
-        // Create screenshot data object
-        final screenshot = ScreenshotData(
-          bytes: Uint8List.fromList(jpegBytes),
-          filename: '${screenName}_${timestamp}_$suffix.jpg',
-          width: width,
-          height: height,
-          group: captureId,
-          timestamp: timestamp,
-        );
-
-        // Add to screenshots list
-        screenshots.add(screenshot);
-      }
-
-      debugPrint('📤 Processing ${screenshots.length} screenshots using mode: $shareMode');
+      debugPrint(
+          '📤 Processing ${screenshots.length} screenshots using mode: $shareMode');
 
       bool success = false;
-      
-      // Process based on selected share mode
+      String? errorMessage;
+
+      // 3. Share based on selected mode
       switch (shareMode) {
         case ShareMode.telegram:
-          // Create a ZIP with all images
           final zipBytes = await StorageService().createZipArchive(
-            screenshots, 
+            screenshots,
             'screenshot',
           );
-          
-          // Send to Telegram
-          success = await _sendToTelegram(zipBytes, 'screenshot');
+
+          final result = await TelegramService().sendDocument(
+            fileBytes: zipBytes,
+            filename:
+                '${screenName}_${DateTime.now().millisecondsSinceEpoch}.zip',
+            caption: '📷 Screenshot Capture: $screenName',
+          );
+
+          success = result.success;
+          if (!success) errorMessage = result.errorMessage;
           break;
-          
+
         case ShareMode.localSave:
-          // Save screenshots locally
-          final path = await StorageService().saveScreenshotsLocally(screenshots);
+          final path =
+              await StorageService().saveScreenshotsLocally(screenshots);
           success = path != null;
+          if (!success) errorMessage = 'Failed to save to local storage';
           break;
-          
+
         case ShareMode.shareWithApps:
-          // Share with other apps
           success = await StorageService().shareScreenshots(screenshots);
+          if (!success) errorMessage = 'Failed to share with external apps';
           break;
-          
+
         case ShareMode.multiple:
-          // For demonstration, default to Telegram in multiple mode
-          // In a real implementation, this would show a dialog for selection
+          // Default to Telegram + Local for multiple example
           final zipBytes = await StorageService().createZipArchive(
-            screenshots, 
+            screenshots,
             'screenshot',
           );
-          success = await _sendToTelegram(zipBytes, 'screenshot');
+          final result = await TelegramService().sendDocument(
+            fileBytes: zipBytes,
+            filename:
+                '${screenName}_${DateTime.now().millisecondsSinceEpoch}.zip',
+          );
+          success = result.success;
+          if (!success) errorMessage = result.errorMessage;
           break;
+      }
+
+      if (success) {
+        if (onSuccess != null) onSuccess();
+      } else {
+        _handleError(errorMessage ?? 'Unknown error during sharing', onError);
       }
 
       _isProcessing = false;
       return success;
-    } catch (e) {
+    } catch (e, stack) {
       debugPrint('❌ ERROR capturing and sharing screen: $e');
+      debugPrint(stack.toString());
+      _handleError(e.toString(), onError);
       _isProcessing = false;
       return false;
     }
   }
 
-  /// Send a ZIP file to Telegram
-  Future<bool> _sendToTelegram(Uint8List zipBytes, String packageName) async {
-    try {
-      final config = ScreenshotConfig();
-      
-      if (!config.isTelegramConfigValid) {
-        debugPrint('❌ Telegram configuration is not valid. Please set token and chatId.');
-        return false;
-      }
-      
-      debugPrint('📤 Sending ZIP to Telegram...');
-
-      final url = 'https://api.telegram.org/bot${config.telegramToken}/sendDocument';
-
-      final request = http.MultipartRequest('POST', Uri.parse(url))
-        ..fields['chat_id'] = config.telegramChatId
-        ..files.add(
-          http.MultipartFile.fromBytes(
-            'document',
-            zipBytes,
-            filename: '${packageName}_${DateTime.now().millisecondsSinceEpoch}.zip',
-          ),
-        );
-
-      final response = await request.send();
-      final statusCode = response.statusCode;
-      final responseText = await response.stream.bytesToString();
-
-      debugPrint('📤 Response: $statusCode - $responseText');
-
-      return statusCode >= 200 && statusCode < 300;
-    } catch (e) {
-      debugPrint('❌ Error sending to Telegram: $e');
-      return false;
-    }
+  void _handleError(String message, Function(String)? onError) {
+    debugPrint('❌ $message');
+    _isProcessing = false;
+    if (onError != null) onError(message);
   }
 }

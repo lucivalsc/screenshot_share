@@ -4,19 +4,20 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:http/http.dart' as http;
-import 'package:image/image.dart' as img;
 
 import '../config/screenshot_config.dart';
 import '../enums/share_mode.dart';
 import '../models/screenshot_data.dart';
 import '../widgets/dual_button_wrapper.dart';
 import 'storage_service.dart';
+import '../utils/image_processor.dart';
+import 'telegram_service.dart';
 
 /// Service for capturing, storing and sharing screenshots
 class ScreenshotManagerService {
   // Singleton for global access
-  static final ScreenshotManagerService _instance = ScreenshotManagerService._internal();
+  static final ScreenshotManagerService _instance =
+      ScreenshotManagerService._internal();
   factory ScreenshotManagerService() => _instance;
   ScreenshotManagerService._internal();
 
@@ -62,6 +63,7 @@ class ScreenshotManagerService {
     String? customName,
     int? quality,
     List<Map<String, dynamic>>? customSizes,
+    Function(String error)? onError,
   }) async {
     // Prevent multiple simultaneous captures
     if (_isCaptureProcessing) return false;
@@ -75,88 +77,50 @@ class ScreenshotManagerService {
 
       debugPrint('📸 Starting screen capture: "$screenName"...');
 
-      // Get the RenderRepaintBoundary
+      // 1. Capture Image from RepaintBoundary
       final renderObject = repaintKey.currentContext?.findRenderObject();
       if (renderObject == null || renderObject is! RenderRepaintBoundary) {
-        debugPrint('❌ Could not find RenderRepaintBoundary');
-        _isCaptureProcessing = false;
+        _handleError('Could not find RenderRepaintBoundary', onError);
         return false;
       }
 
-      // Capture the image
       final boundary = renderObject;
       final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
-      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      final ByteData? byteData =
+          await image.toByteData(format: ui.ImageByteFormat.png);
 
       if (byteData == null) {
-        debugPrint('❌ Failed to get ByteData from image');
-        _isCaptureProcessing = false;
+        _handleError('Failed to get ByteData from image', onError);
         return false;
       }
 
       final Uint8List pngBytes = byteData.buffer.asUint8List();
-      debugPrint('📸 Captured image: ${pngBytes.length} bytes');
+      debugPrint('📸 Captured raw image: ${pngBytes.length} bytes');
 
-      // Decode the image
-      final img.Image? decodedImage = img.decodePng(pngBytes);
-      if (decodedImage == null) {
-        debugPrint('❌ Failed to decode PNG image');
-        _isCaptureProcessing = false;
+      // 2. Process Image (Resize & Encode) in Background Isolate
+      debugPrint('📸 Processing images in background isolate...');
+      final ImageProcessor processor = ImageProcessor();
+      final List<ScreenshotData> screenshots = await processor.processImage(
+        pngBytes: pngBytes,
+        screenName: screenName,
+        screenSizes: screenSizes,
+        imageQuality: imageQuality,
+      );
+
+      if (screenshots.isEmpty) {
+        _handleError('Failed to process screenshots (list is empty)', onError);
         return false;
       }
 
-      debugPrint('📸 Original image: ${decodedImage.width}x${decodedImage.height}');
-
-      // Create a timestamp for this group of images
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final captureId = '${screenName}_$timestamp';
-
-      // Create a list for this capture group
-      final captureGroupList = <ScreenshotData>[];
-
-      // Resize for all screen sizes
-      debugPrint('📸 Resizing for ${screenSizes.length} different screen sizes...');
-
-      for (int i = 0; i < screenSizes.length; i++) {
-        final size = screenSizes[i];
-        final width = size['width'] as int;
-        final height = size['height'] as int;
-        final suffix = size['suffix'] as String;
-
-        debugPrint('📸 Resizing to $width x $height...');
-
-        // Resize the image
-        final resizedImage = img.copyResize(
-          decodedImage,
-          width: width,
-          height: height,
-          interpolation: img.Interpolation.linear,
-        );
-
-        // Encode to JPEG
-        final jpegBytes = img.encodeJpg(resizedImage, quality: imageQuality);
-
-        debugPrint('📸 Image ${i + 1} resized: $width x $height (${jpegBytes.length} bytes)');
-
-        // Create screenshot data object
-        final screenshot = ScreenshotData(
-          bytes: Uint8List.fromList(jpegBytes),
-          filename: '${screenName}_${timestamp}_$suffix.jpg',
-          width: width,
-          height: height,
-          group: captureId,
-          timestamp: timestamp,
-        );
-
-        // Add to this group's list
-        captureGroupList.add(screenshot);
-
-        // Add to the main list of all screenshots
-        _allScreenshots.add(screenshot);
-      }
+      // 3. Store results
+      // Create a timestamp for this group of images (using the one from the first screenshot or now)
+      final captureId = screenshots.first.group;
 
       // Store the group of captures
-      _captureGroups[captureId] = captureGroupList;
+      _captureGroups[captureId] = screenshots;
+
+      // Add to the main list of all screenshots
+      _allScreenshots.addAll(screenshots);
 
       debugPrint(
           '📸 Stored ${screenSizes.length} images. Total: ${_allScreenshots.length} in ${_captureGroups.length} groups');
@@ -165,6 +129,7 @@ class ScreenshotManagerService {
       return true;
     } catch (e) {
       debugPrint('❌ ERROR capturing screen: $e');
+      _handleError(e.toString(), onError);
       _isCaptureProcessing = false;
       return false;
     }
@@ -174,6 +139,8 @@ class ScreenshotManagerService {
   Future<bool> processScreenshots({
     ShareMode? overrideMode,
     bool clearAfterProcessing = true,
+    Function(String error)? onError,
+    Function()? onSuccess,
   }) async {
     // Prevent multiple simultaneous operations
     if (_isSendingProcessing) return false;
@@ -181,50 +148,62 @@ class ScreenshotManagerService {
 
     try {
       if (_allScreenshots.isEmpty) {
-        debugPrint('❌ No screenshots to process');
-        _isSendingProcessing = false;
+        _handleSendingError('No screenshots to process', onError);
         return false;
       }
 
       final config = ScreenshotConfig();
       final shareMode = overrideMode ?? config.shareMode;
 
-      debugPrint('📤 Processing ${_allScreenshots.length} screenshots using mode: $shareMode');
+      debugPrint(
+          '📤 Processing ${_allScreenshots.length} screenshots using mode: $shareMode');
 
       bool success = false;
+      String? errorMessage;
 
       // Process based on selected share mode
       switch (shareMode) {
         case ShareMode.telegram:
-          // Create a ZIP with all images
           final zipBytes = await StorageService().createZipArchive(
             _allScreenshots,
             'screenshots',
           );
 
-          // Send to Telegram
-          success = await _sendToTelegram(zipBytes, 'screenshots');
+          final result = await TelegramService().sendDocument(
+            fileBytes: zipBytes,
+            filename:
+                'screenshots_${DateTime.now().millisecondsSinceEpoch}.zip',
+            caption: '📷 Bundle of ${_allScreenshots.length} screenshots',
+          );
+
+          success = result.success;
+          if (!success) errorMessage = result.errorMessage;
           break;
 
         case ShareMode.localSave:
-          // Save screenshots locally
-          final path = await StorageService().saveScreenshotsLocally(_allScreenshots);
+          final path =
+              await StorageService().saveScreenshotsLocally(_allScreenshots);
           success = path != null;
+          if (!success) errorMessage = 'Failed to save to local storage';
           break;
 
         case ShareMode.shareWithApps:
-          // Share with other apps
           success = await StorageService().shareScreenshots(_allScreenshots);
+          if (!success) errorMessage = 'Failed to share with external apps';
           break;
 
         case ShareMode.multiple:
-          // For demonstration, default to Telegram in multiple mode
-          // In a real implementation, this would show a dialog for selection
           final zipBytes = await StorageService().createZipArchive(
             _allScreenshots,
             'screenshots',
           );
-          success = await _sendToTelegram(zipBytes, 'screenshots');
+          final result = await TelegramService().sendDocument(
+            fileBytes: zipBytes,
+            filename:
+                'screenshots_${DateTime.now().millisecondsSinceEpoch}.zip',
+          );
+          success = result.success;
+          if (!success) errorMessage = result.errorMessage;
           break;
       }
 
@@ -235,50 +214,32 @@ class ScreenshotManagerService {
         debugPrint('🧹 Cleared screenshots after processing');
       }
 
+      if (success) {
+        if (onSuccess != null) onSuccess();
+      } else {
+        _handleSendingError(errorMessage ?? 'Unknown error', onError);
+      }
+
       _isSendingProcessing = false;
       return success;
     } catch (e) {
       debugPrint('❌ ERROR processing screenshots: $e');
+      _handleSendingError(e.toString(), onError);
       _isSendingProcessing = false;
       return false;
     }
   }
 
-  /// Send a ZIP file to Telegram
-  Future<bool> _sendToTelegram(Uint8List zipBytes, String packageName) async {
-    try {
-      final config = ScreenshotConfig();
+  void _handleError(String message, Function(String)? onError) {
+    debugPrint('❌ $message');
+    _isCaptureProcessing = false;
+    if (onError != null) onError(message);
+  }
 
-      if (!config.isTelegramConfigValid) {
-        debugPrint('❌ Telegram configuration is not valid. Please set token and chatId.');
-        return false;
-      }
-
-      debugPrint('📤 Sending ZIP to Telegram...');
-
-      final url = 'https://api.telegram.org/bot${config.telegramToken}/sendDocument';
-
-      final request = http.MultipartRequest('POST', Uri.parse(url))
-        ..fields['chat_id'] = config.telegramChatId
-        ..files.add(
-          http.MultipartFile.fromBytes(
-            'document',
-            zipBytes,
-            filename: '${packageName}_${DateTime.now().millisecondsSinceEpoch}.zip',
-          ),
-        );
-
-      final response = await request.send();
-      final statusCode = response.statusCode;
-      final responseText = await response.stream.bytesToString();
-
-      debugPrint('📤 Response: $statusCode - $responseText');
-
-      return statusCode >= 200 && statusCode < 300;
-    } catch (e) {
-      debugPrint('❌ Error sending to Telegram: $e');
-      return false;
-    }
+  void _handleSendingError(String message, Function(String)? onError) {
+    debugPrint('❌ $message');
+    _isSendingProcessing = false;
+    if (onError != null) onError(message);
   }
 
   /// Clear all stored screenshots
