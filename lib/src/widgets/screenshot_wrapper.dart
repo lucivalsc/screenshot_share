@@ -23,13 +23,13 @@ class ScreenshotWrapper extends StatefulWidget {
 
   /// Creates a screenshot wrapper with a single capture button
   const ScreenshotWrapper({
-    Key? key,
+    super.key,
     required this.child,
     this.mostrarBotao = true,
     this.posicaoBotao = Alignment.bottomRight,
     this.corBotao,
     this.shareMode = ShareMode.telegram,
-  }) : super(key: key);
+  });
 
   @override
   State<ScreenshotWrapper> createState() => _ScreenshotWrapperState();
@@ -84,7 +84,8 @@ class _ScreenshotWrapperState extends State<ScreenshotWrapper> {
                     color: Colors.transparent,
                     child: FloatingActionButton(
                       mini: true,
-                      backgroundColor: widget.corBotao ?? Colors.red.withOpacity(0.7),
+                      backgroundColor:
+                          widget.corBotao ?? Colors.red.withOpacity(0.7),
                       onPressed: _processando ? null : _captureScreen,
                       child: _processando
                           ? const SizedBox(

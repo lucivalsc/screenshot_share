@@ -1,0 +1,175 @@
+name: Build Android Apps
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+# Cancelar builds anteriores da mesma branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_android:
+    runs-on: ubuntu-latest
+    strategy:
+      # Execução paralela dos flavors
+      fail-fast: false
+      matrix:
+        flavor: [assuma, autape, taperatur, juletur]
+        include:
+          - flavor: assuma
+            app_name: Assuma
+            api_address: https://assuma.com.br/api
+            store_android: https://play.google.com/store/apps/details?id=br.com.assuma.transporteuniversitario.br
+            store_apple: https://apps.apple.com/br/app/assuma-transporteuniversit%C3%A1rio/id6446597939
+            target: lib/app/layers/flavors/main_assuma.dart
+          - flavor: autape
+            app_name: Autape
+            api_address: https://autape.com.br/api
+            store_android: https://play.google.com/store/apps/details?id=br.com.autape.transporteuniversitario.br
+            store_apple: https://apps.apple.com/br/app/autape/id6445878870
+            target: lib/app/layers/flavors/main_autape.dart
+          - flavor: taperatur
+            app_name: Taperatur
+            api_address: https://taperatur.com.br/api
+            store_android: https://play.google.com/store/apps/details?id=br.com.taperatur.transporteuniversitario.br
+            store_apple: https://apps.apple.com/br/app/taperatur-transporteuniversit%C3%A1/id6446601819
+            target: lib/app/layers/flavors/main_taperatur.dart
+          - flavor: juletur
+            app_name: Juletur
+            api_address: https://juletur.com.br/api
+            store_android: https://play.google.com/store/apps/details?id=br.com.juletur.transporteuniversitario
+            store_apple: https://apps.apple.com/br/app/juletur/id6478928960
+            target: lib/app/layers/flavors/main_juletur.dart
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.5'
+          channel: 'stable'
+          cache: true
+          cache-key: 'flutter-:os:-:channel:-:version:-:arch:'
+
+      # Cache agressivo das dependências
+      - name: Cache Pub dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.PUB_CACHE }}
+            ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            android/.gradle
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # Cache do build anterior
+      - name: Cache Flutter build
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            .dart_tool
+          key: ${{ runner.os }}-build-${{ matrix.flavor }}-${{ hashFiles('**/*.dart', 'pubspec.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-build-${{ matrix.flavor }}-
+            ${{ runner.os }}-build-
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # REMOVER flutter clean - é contraproducente com cache
+      # - name: Limpar projeto
+      #   run: flutter clean
+
+      # Configuração do Keystore
+      - name: Setup Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/autape.jks
+          cat > android/key.properties << EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=autape.jks
+          EOF
+
+      # Build otimizado - usar flags de performance
+      - name: Build APK and AAB ${{ matrix.flavor }}
+        run: |
+          # Variáveis comuns
+          COMMON_ARGS="--release \
+            --flavor ${{ matrix.flavor }} \
+            --dart-define=DEFINE_APP_NAME=${{ matrix.app_name }} \
+            --dart-define=DEFINE_API_ADDRESS=${{ matrix.api_address }} \
+            --dart-define=DEFINE_KEY_DECRYPT= \
+            --dart-define=DEFINE_STORE_ANDROID=${{ matrix.store_android }} \
+            --dart-define=DEFINE_STORE_APPLE=${{ matrix.store_apple }} \
+            -t ${{ matrix.target }} \
+            --split-per-abi \
+            --tree-shake-icons \
+            --dart-define=FLUTTER_WEB_USE_SKIA=true"
+          
+          # Build APK
+          echo "Building APK for ${{ matrix.flavor }}..."
+          flutter build apk $COMMON_ARGS
+          
+          # Build AAB
+          echo "Building AAB for ${{ matrix.flavor }}..."
+          flutter build appbundle $COMMON_ARGS
+
+      # Upload artifacts combinados
+      - name: Upload APK ${{ matrix.flavor }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-${{ matrix.flavor }}
+          path: build/app/outputs/flutter-apk/*-${{ matrix.flavor }}-*.apk
+          retention-days: 30
+
+      - name: Upload AAB ${{ matrix.flavor }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-aab-${{ matrix.flavor }}
+          path: build/app/outputs/bundle/${{ matrix.flavor }}Release/*.aab
+          retention-days: 30
+
+  # Job opcional para criar release automaticamente
+  create_release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build_android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            android-apk-*/*.apk
+            android-aab-*/*.aab
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
