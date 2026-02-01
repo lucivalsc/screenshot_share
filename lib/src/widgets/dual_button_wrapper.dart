@@ -36,10 +36,12 @@ class DualButtonScreenshotWrapper extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  State<DualButtonScreenshotWrapper> createState() => _DualButtonScreenshotWrapperState();
+  State<DualButtonScreenshotWrapper> createState() =>
+      _DualButtonScreenshotWrapperState();
 }
 
-class _DualButtonScreenshotWrapperState extends State<DualButtonScreenshotWrapper> {
+class _DualButtonScreenshotWrapperState
+    extends State<DualButtonScreenshotWrapper> {
   // Key for RepaintBoundary
   final GlobalKey _repaintKey = GlobalKey();
 
@@ -114,16 +116,23 @@ class _DualButtonScreenshotWrapperState extends State<DualButtonScreenshotWrappe
                     children: [
                       // Share button with badge showing count
                       Badge(
-                        backgroundColor: _captureCount > 0 ? Colors.green.shade700 : Colors.grey.shade700,
-                        label: Text('$_captureCount', style: const TextStyle(color: Colors.white, fontSize: 10)),
+                        backgroundColor: _captureCount > 0
+                            ? Colors.green.shade700
+                            : Colors.grey.shade700,
+                        label: Text('$_captureCount',
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 10)),
                         isLabelVisible: _captureCount > 0,
                         child: Material(
                           type: MaterialType.circle,
                           color: Colors.transparent,
                           child: FloatingActionButton(
                             mini: true,
-                            backgroundColor: widget.corEnviarBotao ?? Colors.blue.withOpacity(0.7),
-                            onPressed: (_enviando || _captureCount == 0) ? null : _shareScreenshots,
+                            backgroundColor: widget.corEnviarBotao ??
+                                Colors.blue.withValues(alpha: 0.7),
+                            onPressed: (_enviando || _captureCount == 0)
+                                ? null
+                                : _shareScreenshots,
                             child: _enviando
                                 ? const SizedBox(
                                     width: 20,
@@ -146,7 +155,8 @@ class _DualButtonScreenshotWrapperState extends State<DualButtonScreenshotWrappe
                         color: Colors.transparent,
                         child: FloatingActionButton(
                           mini: true,
-                          backgroundColor: widget.corCapturarBotao ?? Colors.red.withOpacity(0.7),
+                          backgroundColor: widget.corCapturarBotao ??
+                              Colors.red.withValues(alpha: 0.7),
                           onPressed: _capturando ? null : _captureScreen,
                           child: _capturando
                               ? const SizedBox(
@@ -251,7 +261,7 @@ class _DualButtonScreenshotWrapperState extends State<DualButtonScreenshotWrappe
             color: Colors.transparent,
             child: Container(
               decoration: BoxDecoration(
-                color: color ?? Colors.black.withOpacity(0.7),
+                color: color ?? Colors.black.withValues(alpha: 0.7),
                 borderRadius: BorderRadius.circular(8),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),

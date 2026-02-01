@@ -18,7 +18,8 @@ class StorageService {
   StorageService._internal();
 
   /// Save a list of screenshots to the device storage
-  Future<String?> saveScreenshotsLocally(List<ScreenshotData> screenshots) async {
+  Future<String?> saveScreenshotsLocally(
+      List<ScreenshotData> screenshots) async {
     try {
       if (screenshots.isEmpty) {
         debugPrint('⚠️ No screenshots to save');
@@ -55,7 +56,8 @@ class StorageService {
         debugPrint('✅ Saved screenshot: ${file.path}');
       }
 
-      debugPrint('✅ Saved ${savedFiles.length} screenshots to ${subfolder.path}');
+      debugPrint(
+          '✅ Saved ${savedFiles.length} screenshots to ${subfolder.path}');
       return subfolder.path;
     } catch (e) {
       debugPrint('❌ Error saving screenshots: $e');
@@ -75,7 +77,7 @@ class StorageService {
       final directory = await getTemporaryDirectory();
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final shareFolder = Directory('${directory.path}/share_$timestamp');
-      
+
       if (!await shareFolder.exists()) {
         await shareFolder.create(recursive: true);
       }
@@ -104,7 +106,8 @@ class StorageService {
   }
 
   /// Create a ZIP archive from screenshots
-  Future<Uint8List> createZipArchive(List<ScreenshotData> screenshots, String archiveName) async {
+  Future<Uint8List> createZipArchive(
+      List<ScreenshotData> screenshots, String archiveName) async {
     try {
       final archive = Archive();
 
@@ -120,10 +123,6 @@ class StorageService {
 
       final zipEncoder = ZipEncoder();
       final zipBytes = zipEncoder.encode(archive);
-
-      if (zipBytes == null) {
-        throw Exception('Failed to create ZIP archive');
-      }
 
       return Uint8List.fromList(zipBytes);
     } catch (e) {

@@ -85,7 +85,7 @@ class _ScreenshotWrapperState extends State<ScreenshotWrapper> {
                     child: FloatingActionButton(
                       mini: true,
                       backgroundColor:
-                          widget.corBotao ?? Colors.red.withOpacity(0.7),
+                          widget.corBotao ?? Colors.red.withValues(alpha: 0.7),
                       onPressed: _processando ? null : _captureScreen,
                       child: _processando
                           ? const SizedBox(
@@ -158,7 +158,7 @@ class _ScreenshotWrapperState extends State<ScreenshotWrapper> {
             color: Colors.transparent,
             child: Container(
               decoration: BoxDecoration(
-                color: color ?? Colors.black.withOpacity(0.7),
+                color: color ?? Colors.black.withValues(alpha: 0.7),
                 borderRadius: BorderRadius.circular(8),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),

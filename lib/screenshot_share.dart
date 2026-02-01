@@ -12,6 +12,7 @@ export 'src/config/screenshot_config.dart';
 
 // Export enums
 export 'src/enums/share_mode.dart';
+export 'src/enums/device_type.dart';
 
 // Export model classes
 export 'src/models/screenshot_data.dart';

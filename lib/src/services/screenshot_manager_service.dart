@@ -50,8 +50,8 @@ class ScreenshotManagerService {
     return DualButtonScreenshotWrapper(
       mostrarBotoes: showButtons ?? config.shouldShowButtons,
       posicaoBotoes: buttonPosition ?? Alignment.bottomRight,
-      corCapturarBotao: captureButtonColor ?? Colors.red.withOpacity(0.7),
-      corEnviarBotao: shareButtonColor ?? Colors.blue.withOpacity(0.7),
+      corCapturarBotao: captureButtonColor ?? Colors.red.withValues(alpha: 0.7),
+      corEnviarBotao: shareButtonColor ?? Colors.blue.withValues(alpha: 0.7),
       shareMode: overrideShareMode ?? config.shareMode,
       child: child,
     );
