@@ -16,7 +16,7 @@ void main() {
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -32,7 +32,7 @@ class MyApp extends StatelessWidget {
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({Key? key}) : super(key: key);
+  const HomePage({super.key});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -57,7 +57,9 @@ class _HomePageState extends State<HomePage> {
                 _useDualButtons = !_useDualButtons;
               });
             },
-            tooltip: _useDualButtons ? 'Switch to single button mode' : 'Switch to dual button mode',
+            tooltip: _useDualButtons
+                ? 'Switch to single button mode'
+                : 'Switch to dual button mode',
           ),
         ],
       ),
@@ -98,7 +100,7 @@ class _HomePageState extends State<HomePage> {
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.3),
+                    color: Colors.black.withValues(alpha: 0.3),
                     blurRadius: 10,
                     offset: const Offset(5, 5),
                   ),
@@ -117,7 +119,8 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(height: 30),
 
             // Instructions
-            const Text('Use the buttons in the bottom-right corner\nto capture screenshots'),
+            const Text(
+                'Use the buttons in the bottom-right corner\nto capture screenshots'),
           ],
         ),
       ),

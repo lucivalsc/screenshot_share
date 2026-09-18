@@ -26,14 +26,14 @@ class DualButtonScreenshotWrapper extends StatefulWidget {
 
   /// Creates a screenshot wrapper with capture and share buttons
   const DualButtonScreenshotWrapper({
-    Key? key,
+    super.key,
     required this.child,
     this.mostrarBotoes = true,
     this.posicaoBotoes = Alignment.bottomRight,
     this.corCapturarBotao,
     this.corEnviarBotao,
     this.shareMode = ShareMode.telegram,
-  }) : super(key: key);
+  });
 
   @override
   State<DualButtonScreenshotWrapper> createState() =>

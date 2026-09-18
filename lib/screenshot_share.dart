@@ -1,7 +1,7 @@
 // Biblioteca principal do pacote
 /// A Flutter package for capturing screenshots and sharing them via Telegram,
 /// local storage, or sharing with other apps.
-library flutter_screenshot_telegram;
+library;
 
 // Export main services
 export 'src/services/screenshot_service.dart';

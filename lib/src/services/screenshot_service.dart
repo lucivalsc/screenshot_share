@@ -36,7 +36,7 @@ class ScreenshotService {
     return ScreenshotWrapper(
       mostrarBotao: showButton ?? config.shouldShowButtons,
       posicaoBotao: buttonPosition ?? Alignment.bottomRight,
-      corBotao: buttonColor ?? Colors.red.withOpacity(0.7),
+      corBotao: buttonColor ?? Colors.red.withValues(alpha: 0.7),
       shareMode: overrideShareMode ?? config.shareMode,
       child: child,
     );

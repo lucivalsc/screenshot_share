@@ -1,3 +1,4 @@
+// ignore_for_file: deprecated_member_use
 // Serviço de armazenamento
 import 'dart:io';
 
@@ -123,7 +124,6 @@ class StorageService {
 
       final zipEncoder = ZipEncoder();
       final zipBytes = zipEncoder.encode(archive);
-
       return Uint8List.fromList(zipBytes);
     } catch (e) {
       debugPrint('❌ Error creating ZIP archive: $e');
