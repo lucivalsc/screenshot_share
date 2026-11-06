@@ -123,7 +123,11 @@ class StorageService {
       }
 
       final zipEncoder = ZipEncoder();
-      final zipBytes = zipEncoder.encode(archive);
+      final dynamic rawBytes = zipEncoder.encode(archive);
+      if (rawBytes == null) {
+        throw Exception('Failed to encode ZIP archive');
+      }
+      final List<int> zipBytes = (rawBytes as List).cast<int>();
       return Uint8List.fromList(zipBytes);
     } catch (e) {
       debugPrint('❌ Error creating ZIP archive: $e');

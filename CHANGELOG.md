@@ -1,3 +1,8 @@
+## 0.1.4
+* Atualização de dependências: `permission_handler` para ^13.0.2, `archive` para ^4.6.0, `image` para ^4.12.0 e `share_plus` para ^12.0.2.
+* Correção de codificação de arquivos ZIP em `StorageService` para versões recentes do `archive`.
+* Adição e correção de testes unitários para `ScreenshotConfig`.
+
 ## 0.1.3
 * Atualização de dependências para compatibilidade com Flutter 3.35.4 e Dart 3.9.2.
 * Atualizado constraint de SDK para >=3.0.0 <4.0.0.
