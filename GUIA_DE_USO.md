@@ -1,89 +1,170 @@
 # Como usar
 
-Este é um guia rápido para integrar o pacote `screenshot_share_telegram` em seu projeto Flutter.
+Guia rápido para integrar o pacote `screenshot_share_telegram` (v0.2.0) em um
+projeto Flutter.
 
-## 1. Configuração Inicial
+> **Atenção:** o envio para o Telegram **foi removido na 0.2.0**. O pacote não
+> aceita, armazena nem transmite credenciais. Os destinos disponíveis são
+> salvamento local e share sheet nativo, e **todo destino recebe um único
+> arquivo ZIP**. O motivo está no `README.md`, seção *Why Telegram was
+> removed*.
 
-No seu arquivo `main.dart`, inicialize a configuração antes de rodar o app:
+## 1. Configuração inicial
+
+No `main.dart`, antes do `runApp`:
 
 ```dart
 void main() {
   ScreenshotConfig.configure(
-    // (Opcional) Token e Chat ID do Telegram
-    telegramToken: 'SEU_TOKEN_AQUI',
-    telegramChatId: 'SEU_CHAT_ID_AQUI',
-    
-    // (Opcional) Configurações visuais e de comportamento
-    shareMode: ShareMode.telegram, // Ou localSave, shareWithApps
-    showButtonsInDebugOnly: true, // Se true, some em release
-    
-    // (Novo) Filtrar dispositivos específicos para gerar screenshot
+    // Destino: localSave, shareWithApps ou askUser
+    shareMode: ShareMode.askUser,
+
+    // Qualidade e redimensionamento
+    imageQuality: 90,
+    resizeStrategy: ResizeStrategy.fitContain, // padrão: preserva a proporção
+    backgroundColor: const Color(0xFF000000),  // preenchimento das bordas
+
+    // Quais resoluções gerar
     deviceTypes: [
-      DeviceType.iphone, // Apenas resoluções de iPhone
-      DeviceType.android, // Apenas resoluções de Android
+      DeviceType.iphone,
+      DeviceType.android,
     ],
+
+    // Comportamento
+    fileNamePrefix: 'meuapp',
+    showButtonsInDebugOnly: true, // some em release
+
+    // Limites de memória do buffer (modo gerenciador)
+    maxStoredCaptures: 20,
+    maxTotalBytes: 40 * 1024 * 1024,
+
+    // Textos
+    strings: ScreenshotStrings.ptBr,
   );
 
   runApp(const MyApp());
 }
 ```
 
-## 2. Envolvendo sua App
+Todo parâmetro é validado: um valor fora da faixa lança `ArgumentError`
+imediatamente, em vez de falhar depois dentro do isolate.
 
-Para que os botões de captura apareçam sobre sua aplicação, use o método estático `wrapScreen` no `builder` do seu `MaterialApp`:
+## 2. Envolvendo sua aplicação
 
-**Modo Simples (1 Botão - Captura e Envia):**
+Use `wrapScreen` no `builder` do `MaterialApp`.
+
+**Modo simples (1 botão — captura e entrega na hora):**
+
 ```dart
 MaterialApp(
-  builder: (context, child) {
-    return ScreenshotService.wrapScreen(
-      child: child ?? const SizedBox(),
-      showButton: true,
-    );
-  },
-  home: HomePage(),
+  builder: (context, child) => ScreenshotService.wrapScreen(
+    child: child ?? const SizedBox.shrink(),
+  ),
+  home: const HomePage(),
 );
 ```
 
-**Modo Gerenciador (2 Botões - Captura vários, Envia depois):**
+**Modo gerenciador (2 botões — captura várias, envia um ZIP depois):**
+
 ```dart
 MaterialApp(
-  builder: (context, child) {
-    return ScreenshotManagerService.wrapScreen(
-      child: child ?? const SizedBox(),
-      showButtons: true, // Botão Vermelho (Captura) e Azul (Envia)
-    );
-  },
-  home: HomePage(),
+  builder: (context, child) => ScreenshotManagerService.wrapScreen(
+    child: child ?? const SizedBox.shrink(),
+    onShareResult: (result) => debugPrint('$result'),
+  ),
+  home: const HomePage(),
 );
 ```
 
-## 3. Dispositivos Suportados
+> Envolva **dentro** do `builder`, não acima do `MaterialApp`: o
+> `ShareMode.askUser` precisa de um `Navigator` ancestral para exibir o
+> seletor de destino.
 
-O pacote gera automaticamente versões redimensionadas da sua tela para simular diferentes devices:
+## 3. Tratando o resultado
 
-*   **iPhone**: 6.5" e 6.7" (Portrait)
-*   **iPad**: 12.9" e 12.9" Pro (Portrait)
-*   **Android**: 1080p e 1440p
+As operações retornam `ScreenshotResult`, o que permite distinguir uma falha
+real de "já existe uma operação em andamento":
 
-Você pode controlar quais são gerados usando a propriedade `deviceTypes` na configuração.
+```dart
+final result = await ScreenshotManagerService().processScreenshots();
+
+switch (result) {
+  case ScreenshotSuccess(count: final n, location: final path):
+    // `location` só vem preenchido no modo localSave
+    mostrarInfo(path == null ? '$n imagens enviadas' : 'Salvo em $path');
+
+  case ScreenshotBusy():
+    break; // não é erro — não exiba mensagem de falha
+
+  case ScreenshotCancelled():
+    mostrarInfo('Cancelado');
+
+  case ScreenshotFailure(kind: final kind, message: final message):
+    mostrarErro(message); // mensagem diagnóstica real
+}
+```
+
+Os wrappers já fazem isso e exibem a mensagem; os callbacks `onResult` /
+`onCaptureResult` / `onShareResult` existem para integrar ao seu próprio
+sistema de notificação (SnackBar, Crashlytics, Sentry).
+
+## 4. Dispositivos suportados
+
+O pacote gera versões redimensionadas da tela para simular diferentes devices:
+
+| Tipo | Resoluções (portrait) |
+|---|---|
+| `DeviceType.android` | 1080×1920, 1440×2560 |
+| `DeviceType.iphone` | 1242×2688 (6.5"), 1284×2778 (6.7") |
+| `DeviceType.ipad` | 2064×2752, 2048×2732 |
+| `DeviceType.windows` | 1366×768, 1920×1080 |
+| `DeviceType.macos` | 1280×800, 2560×1600 |
+| `DeviceType.linux` | 1366×768, 1920×1080 |
+
+Sem filtro, o padrão é o conjunto móvel (android + iphone + ipad = 6
+variantes). Para resoluções próprias, use `screenSizes` com `ScreenSize`.
+
+## 5. Atalhos de teclado
+
+Habilitados por padrão:
+
+| Atalho | Ação |
+|---|---|
+| `Ctrl` / `Cmd` + `Shift` + `S` | Capturar |
+| `Ctrl` / `Cmd` + `Shift` + `E` | Enviar (modo gerenciador) |
+
+Desative com `enableKeyboardShortcut: false` no `wrapScreen`.
+
+## 6. Permissões
+
+**Nenhuma.** Os destinos padrão são diretórios que o app sempre pode escrever.
+
+Se você seguiu um README antigo e declarou `WRITE_EXTERNAL_STORAGE` /
+`READ_EXTERNAL_STORAGE` no `AndroidManifest.xml`, pode removê-los.
 
 ---
 
 # Manutenção e Publicação
 
-## Publicando no pub.dev
+Antes de publicar, siga o checklist completo em
+[`CLAUDE.md`](CLAUDE.md#8-checklist-de-publicação).
 
-Para publicar uma nova versão deste pacote:
+```bash
+# Verificações locais
+dart format .
+flutter analyze --fatal-infos
+flutter test --coverage
 
-1. **Verifique se tudo está correto (Dry Run):**
-   ```bash
-   flutter pub publish --dry-run
-   ```
+# Conferir o pacote
+flutter pub publish --dry-run
 
-2. **Publique o pacote:**
-   ```bash
-   flutter pub publish
-   ```
-   
-> **Nota:** Certifique-se de ter atualizado a versão no `pubspec.yaml` e documentado as mudanças no `CHANGELOG.md` antes de publicar.
+# Validar o exemplo
+cd example && flutter pub get && flutter build apk --debug && cd ..
+
+# Publicar
+flutter pub publish
+```
+
+> Atualize `version` no `pubspec.yaml`, documente as mudanças no
+> `CHANGELOG.md` (marcando *breaking changes*) e sincronize
+> `.github/copilot-instructions.md` com o `pubspec.yaml`.

@@ -1,20 +1,24 @@
-/// Enum defining different device types for screenshot generation
+/// Enum defining different device types for screenshot generation.
+///
+/// Each value maps to a set of portrait resolutions used to generate one image
+/// variant per entry. Use [ScreenshotConfig.configure] with `deviceTypes` to
+/// restrict generation to a subset.
 enum DeviceType {
-  /// Android devices (Phones and Tablets)
+  /// Android devices (phones and tablets).
   android,
 
-  /// iOS Phones (iPhone)
+  /// iOS phones (iPhone).
   iphone,
 
-  /// iOS Tablets (iPad)
+  /// iOS tablets (iPad).
   ipad,
 
-  /// Macos Desktop
+  /// macOS desktop.
   macos,
 
-  /// Windows Desktop
+  /// Windows desktop.
   windows,
 
-  /// Linux Desktop
+  /// Linux desktop.
   linux,
 }

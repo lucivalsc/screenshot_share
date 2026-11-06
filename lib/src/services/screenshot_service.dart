@@ -1,178 +1,109 @@
-// Serviço de captura de tela
-import 'dart:typed_data';
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 
 import '../config/screenshot_config.dart';
+import '../config/screenshot_strings.dart';
 import '../enums/share_mode.dart';
+import '../models/screen_size.dart';
 import '../models/screenshot_data.dart';
+import '../models/screenshot_result.dart';
+import '../utils/async_lock.dart';
 import '../widgets/screenshot_wrapper.dart';
+import 'capture_pipeline.dart';
 import 'storage_service.dart';
-import '../utils/image_processor.dart';
-import 'telegram_service.dart';
 
-/// Service for capturing and immediately sharing screenshots (single-button mode)
+/// Captures the screen and shares it immediately (single-button mode).
 class ScreenshotService {
-  // Singleton pattern
   static final ScreenshotService _instance = ScreenshotService._internal();
+
+  /// Returns the singleton service.
   factory ScreenshotService() => _instance;
+
   ScreenshotService._internal();
 
-  // Capture and share status
-  bool _isProcessing = false;
+  final AsyncLock _lock = AsyncLock();
+  final CapturePipeline _pipeline = const CapturePipeline();
 
-  /// Create a widget that wraps the entire app with screenshot capture functionality
+  /// Whether a capture is currently in progress.
+  bool get isProcessing => _lock.isLocked;
+
+  /// Wraps [child] with a single capture-and-share button.
   static Widget wrapScreen({
     required Widget child,
     bool? showButton,
     AlignmentGeometry? buttonPosition,
     Color? buttonColor,
     ShareMode? overrideShareMode,
+    ScreenshotStrings? strings,
+    bool enableKeyboardShortcut = true,
+    ValueChanged<ScreenshotResult>? onResult,
   }) {
     final config = ScreenshotConfig();
 
     return ScreenshotWrapper(
       mostrarBotao: showButton ?? config.shouldShowButtons,
       posicaoBotao: buttonPosition ?? Alignment.bottomRight,
-      corBotao: buttonColor ?? Colors.red.withValues(alpha: 0.7),
+      corBotao: buttonColor,
       shareMode: overrideShareMode ?? config.shareMode,
+      strings: strings ?? config.strings,
+      enableKeyboardShortcut: enableKeyboardShortcut,
+      onResult: onResult,
       child: child,
     );
   }
 
-  /// Capture and immediately share a screenshot
-  Future<bool> captureAndShare(
+  /// Captures the subtree behind [repaintKey] and shares it as a ZIP archive.
+  ///
+  /// Returns [ScreenshotBusy] when another capture is already running — this
+  /// is not a failure, and callers should not report it as one.
+  Future<ScreenshotResult> captureAndShare(
     GlobalKey repaintKey, {
+    required double pixelRatio,
     String? customName,
     int? quality,
-    List<Map<String, dynamic>>? customSizes,
+    List<ScreenSize>? customSizes,
     ShareMode? overrideMode,
-    Function(String error)? onError,
-    Function()? onSuccess,
+    ShareModePicker? modePicker,
+    ValueChanged<ScreenshotResult>? onResult,
   }) async {
-    // Prevent multiple simultaneous operations
-    if (_isProcessing) return false;
-    _isProcessing = true;
-
-    try {
+    final result = await _lock.runIfFree(() async {
       final config = ScreenshotConfig();
-      final screenName = customName ?? config.fileNamePrefix;
-      final screenSizes = customSizes ?? config.screenSizes;
-      final imageQuality = quality ?? config.imageQuality;
-      final shareMode = overrideMode ?? config.shareMode;
+      final strings = config.strings;
+      final archiveName = customName == null || customName.isEmpty
+          ? config.fileNamePrefix
+          : customName;
 
-      debugPrint('📸 Starting screen capture and share: "$screenName"...');
+      List<ScreenshotData> screenshots = const [];
+      try {
+        screenshots = await _pipeline.captureVariants(
+          repaintKey: repaintKey,
+          pixelRatio: pixelRatio,
+          customName: customName,
+          quality: quality,
+          customSizes: customSizes,
+        );
 
-      // 1. Capture Image from RepaintBoundary
-      final renderObject = repaintKey.currentContext?.findRenderObject();
-      if (renderObject == null || renderObject is! RenderRepaintBoundary) {
-        _handleError('Could not find RenderRepaintBoundary', onError);
-        return false;
+        return await _pipeline.dispatchArchive(
+          screenshots: screenshots,
+          archiveName: archiveName,
+          mode: overrideMode ?? config.shareMode,
+          strings: strings,
+          modePicker: modePicker,
+        );
+      } catch (error, stackTrace) {
+        debugPrint('❌ captureAndShare falhou: $error');
+        return CapturePipeline.describeError(
+          error,
+          stackTrace,
+          fallbackMessage: strings.shareError,
+        );
+      } finally {
+        // Nothing is retained between calls in single-button mode.
+        await StorageService().deleteScreenshotFiles(screenshots);
       }
+    });
 
-      final boundary = renderObject;
-      final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
-      final ByteData? byteData =
-          await image.toByteData(format: ui.ImageByteFormat.png);
-
-      if (byteData == null) {
-        _handleError('Failed to get ByteData from image', onError);
-        return false;
-      }
-
-      final Uint8List pngBytes = byteData.buffer.asUint8List();
-      debugPrint('📸 Captured raw image: ${pngBytes.length} bytes');
-
-      // 2. Process Image (Resize & Encode) in Background Isolate
-      debugPrint('📸 Processing images in background isolate...');
-      final ImageProcessor processor = ImageProcessor();
-      final List<ScreenshotData> screenshots = await processor.processImage(
-        pngBytes: pngBytes,
-        screenName: screenName,
-        screenSizes: screenSizes,
-        imageQuality: imageQuality,
-      );
-
-      if (screenshots.isEmpty) {
-        _handleError('Failed to process screenshots (list is empty)', onError);
-        return false;
-      }
-
-      debugPrint(
-          '📤 Processing ${screenshots.length} screenshots using mode: $shareMode');
-
-      bool success = false;
-      String? errorMessage;
-
-      // 3. Share based on selected mode
-      switch (shareMode) {
-        case ShareMode.telegram:
-          final zipBytes = await StorageService().createZipArchive(
-            screenshots,
-            'screenshot',
-          );
-
-          final result = await TelegramService().sendDocument(
-            fileBytes: zipBytes,
-            filename:
-                '${screenName}_${DateTime.now().millisecondsSinceEpoch}.zip',
-            caption: '📷 Screenshot Capture: $screenName',
-          );
-
-          success = result.success;
-          if (!success) errorMessage = result.errorMessage;
-          break;
-
-        case ShareMode.localSave:
-          final path =
-              await StorageService().saveScreenshotsLocally(screenshots);
-          success = path != null;
-          if (!success) errorMessage = 'Failed to save to local storage';
-          break;
-
-        case ShareMode.shareWithApps:
-          success = await StorageService().shareScreenshots(screenshots);
-          if (!success) errorMessage = 'Failed to share with external apps';
-          break;
-
-        case ShareMode.multiple:
-          // Default to Telegram + Local for multiple example
-          final zipBytes = await StorageService().createZipArchive(
-            screenshots,
-            'screenshot',
-          );
-          final result = await TelegramService().sendDocument(
-            fileBytes: zipBytes,
-            filename:
-                '${screenName}_${DateTime.now().millisecondsSinceEpoch}.zip',
-          );
-          success = result.success;
-          if (!success) errorMessage = result.errorMessage;
-          break;
-      }
-
-      if (success) {
-        if (onSuccess != null) onSuccess();
-      } else {
-        _handleError(errorMessage ?? 'Unknown error during sharing', onError);
-      }
-
-      _isProcessing = false;
-      return success;
-    } catch (e, stack) {
-      debugPrint('❌ ERROR capturing and sharing screen: $e');
-      debugPrint(stack.toString());
-      _handleError(e.toString(), onError);
-      _isProcessing = false;
-      return false;
-    }
-  }
-
-  void _handleError(String message, Function(String)? onError) {
-    debugPrint('❌ $message');
-    _isProcessing = false;
-    if (onError != null) onError(message);
+    final outcome = result ?? const ScreenshotBusy();
+    onResult?.call(outcome);
+    return outcome;
   }
 }

@@ -1,0 +1,28 @@
+# Platform scaffolding left over from when this repository was generated as an
+# application. A pure Dart package does not need it, and shipping it bloats the
+# published archive. The runnable demo lives in example/ with its own
+# android/ and ios/ folders.
+/android/
+/ios/
+/linux/
+/macos/
+/windows/
+/web/
+
+# Build and tooling artifacts
+/build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Internal docs and templates: useful in the repository, noise on pub.dev
+/docs/
+TEMPLATES.md

@@ -1,233 +1,296 @@
-// ignore_for_file: deprecated_member_use
-// Serviço de armazenamento
 import 'dart:io';
 
-import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../config/screenshot_config.dart';
+import '../exceptions/screenshot_exceptions.dart';
 import '../models/screenshot_data.dart';
+import '../utils/file_name_sanitizer.dart';
 
-/// Service for storing and sharing screenshots
+/// What the native share sheet reported back.
+enum ShareOutcome {
+  /// The archive was handed over successfully, or the platform cannot tell.
+  completed,
+
+  /// The user dismissed the share sheet without choosing a target.
+  dismissed,
+}
+
+/// Filesystem, archiving and native-sharing operations.
+///
+/// Every destination receives a single ZIP archive: individual variants are
+/// never exposed as loose files, so one capture session always travels as one
+/// artefact.
 class StorageService {
-  // Singleton pattern
   static final StorageService _instance = StorageService._internal();
+
+  /// Returns the singleton storage service.
   factory StorageService() => _instance;
+
   StorageService._internal();
 
-  /// Save a list of screenshots to the device storage
-  Future<String?> saveScreenshotsLocally(
-      List<ScreenshotData> screenshots) async {
+  /// Name of the package-owned folder inside the system cache directory.
+  static const String cacheFolderName = 'screenshot_share';
+
+  /// Age after which temporary artefacts are discarded by
+  /// [cleanupTemporaryArtifacts].
+  static const Duration temporaryArtifactMaxAge = Duration(hours: 24);
+
+  // --------------------------------------------------------------- locations
+
+  /// Directory holding freshly generated variants.
+  Future<Directory> captureCacheDirectory() =>
+      _ensureCacheSubdirectory('captures');
+
+  /// Directory holding assembled ZIP archives.
+  Future<Directory> archiveCacheDirectory() =>
+      _ensureCacheSubdirectory('archives');
+
+  Future<Directory> _ensureCacheSubdirectory(String name) async {
     try {
-      if (screenshots.isEmpty) {
-        debugPrint('⚠️ No screenshots to save');
-        return null;
-      }
-
-      // Check storage permission
-      final permission = await _requestStoragePermission();
-      if (!permission) {
-        debugPrint('❌ Storage permission denied');
-        return null;
-      }
-
-      // Determine save directory
-      final directory = await _getSaveDirectory();
-      if (directory == null) {
-        debugPrint('❌ Could not get save directory');
-        return null;
-      }
-
-      // Create a subfolder with timestamp
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final subfolder = Directory('${directory.path}/screenshots_$timestamp');
-      if (!await subfolder.exists()) {
-        await subfolder.create(recursive: true);
-      }
-
-      // Save each screenshot
-      final savedFiles = <String>[];
-      for (var screenshot in screenshots) {
-        final file = File('${subfolder.path}/${screenshot.filename}');
-        await file.writeAsBytes(screenshot.bytes);
-        savedFiles.add(file.path);
-        debugPrint('✅ Saved screenshot: ${file.path}');
-      }
-
-      debugPrint(
-          '✅ Saved ${savedFiles.length} screenshots to ${subfolder.path}');
-      return subfolder.path;
-    } catch (e) {
-      debugPrint('❌ Error saving screenshots: $e');
-      return null;
-    }
-  }
-
-  /// Share screenshots with other apps
-  Future<bool> shareScreenshots(List<ScreenshotData> screenshots) async {
-    try {
-      if (screenshots.isEmpty) {
-        debugPrint('⚠️ No screenshots to share');
-        return false;
-      }
-
-      // Determine temporary directory for sharing
-      final directory = await getTemporaryDirectory();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final shareFolder = Directory('${directory.path}/share_$timestamp');
-
-      if (!await shareFolder.exists()) {
-        await shareFolder.create(recursive: true);
-      }
-
-      // Save files to temp folder for sharing
-      final filesToShare = <XFile>[];
-      for (var screenshot in screenshots) {
-        final file = File('${shareFolder.path}/${screenshot.filename}');
-        await file.writeAsBytes(screenshot.bytes);
-        filesToShare.add(XFile(file.path, mimeType: 'image/jpeg'));
-      }
-
-      // Share files
-      await Share.shareXFiles(
-        filesToShare,
-        subject: 'Screenshots',
-        text: 'Sharing ${filesToShare.length} screenshots',
+      final base = await getTemporaryDirectory();
+      final directory = Directory(
+        '${base.path}${Platform.pathSeparator}$cacheFolderName'
+        '${Platform.pathSeparator}$name',
       );
-
-      debugPrint('✅ Shared ${filesToShare.length} screenshots');
-      return true;
-    } catch (e) {
-      debugPrint('❌ Error sharing screenshots: $e');
-      return false;
-    }
-  }
-
-  /// Create a ZIP archive from screenshots
-  Future<Uint8List> createZipArchive(
-      List<ScreenshotData> screenshots, String archiveName) async {
-    try {
-      final archive = Archive();
-
-      for (var screenshot in screenshots) {
-        archive.addFile(
-          ArchiveFile(
-            screenshot.filename,
-            screenshot.bytes.length,
-            screenshot.bytes,
-          ),
-        );
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
       }
-
-      final zipEncoder = ZipEncoder();
-      final dynamic rawBytes = zipEncoder.encode(archive);
-      if (rawBytes == null) {
-        throw Exception('Failed to encode ZIP archive');
-      }
-      final List<int> zipBytes = (rawBytes as List).cast<int>();
-      return Uint8List.fromList(zipBytes);
-    } catch (e) {
-      debugPrint('❌ Error creating ZIP archive: $e');
-      rethrow;
-    }
-  }
-
-  /// Save a ZIP file to the device storage
-  Future<String?> saveZipArchive(Uint8List zipBytes, String archiveName) async {
-    try {
-      // Check storage permission
-      final permission = await _requestStoragePermission();
-      if (!permission) {
-        debugPrint('❌ Storage permission denied');
-        return null;
-      }
-
-      // Determine save directory
-      final directory = await _getSaveDirectory();
-      if (directory == null) {
-        debugPrint('❌ Could not get save directory');
-        return null;
-      }
-
-      // Save the ZIP file
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final zipFile = File('${directory.path}/${archiveName}_$timestamp.zip');
-      await zipFile.writeAsBytes(zipBytes);
-
-      debugPrint('✅ Saved ZIP file: ${zipFile.path}');
-      return zipFile.path;
-    } catch (e) {
-      debugPrint('❌ Error saving ZIP file: $e');
-      return null;
-    }
-  }
-
-  /// Share a ZIP file with other apps
-  Future<bool> shareZipArchive(Uint8List zipBytes, String archiveName) async {
-    try {
-      // Save ZIP to temporary directory
-      final directory = await getTemporaryDirectory();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final zipFile = File('${directory.path}/${archiveName}_$timestamp.zip');
-      await zipFile.writeAsBytes(zipBytes);
-
-      // Share the ZIP file
-      await Share.shareXFiles(
-        [XFile(zipFile.path, mimeType: 'application/zip')],
-        subject: 'Screenshots ZIP',
-        text: 'Sharing screenshots archive',
+      return directory;
+    } on FileSystemException catch (error, stackTrace) {
+      throw StorageFailureException(
+        'Não foi possível preparar o diretório de cache "$name"',
+        isPermissionIssue: _looksLikePermissionIssue(error),
+        cause: error,
+        causeStackTrace: stackTrace,
       );
-
-      debugPrint('✅ Shared ZIP file: ${zipFile.path}');
-      return true;
-    } catch (e) {
-      debugPrint('❌ Error sharing ZIP file: $e');
-      return false;
     }
   }
 
-  /// Request storage permission
-  Future<bool> _requestStoragePermission() async {
-    if (!Platform.isAndroid && !Platform.isIOS) {
-      // No need to check permission on other platforms
-      return true;
-    }
+  /// Resolves where saved archives are written.
+  ///
+  /// Uses `savePath` when configured, otherwise a directory the app can always
+  /// write to without any OS permission. Note that version 0.1.4 requested the
+  /// long-obsolete `Permission.storage` for a destination that never needed
+  /// it, which made local saving fail outright on Android 13+.
+  Future<Directory> resolveSaveDirectory() async {
+    final customPath = ScreenshotConfig().savePath;
 
-    var status = await Permission.storage.status;
-    if (!status.isGranted) {
-      status = await Permission.storage.request();
-    }
-
-    return status.isGranted;
-  }
-
-  /// Get the directory for saving screenshots
-  Future<Directory?> _getSaveDirectory() async {
-    try {
-      // Use custom path if specified in config
-      final customPath = ScreenshotConfig().savePath;
-      if (customPath != null && customPath.isNotEmpty) {
+    if (customPath != null && customPath.isNotEmpty) {
+      try {
         final directory = Directory(customPath);
         if (!await directory.exists()) {
           await directory.create(recursive: true);
         }
         return directory;
+      } on FileSystemException catch (error, stackTrace) {
+        throw StorageFailureException(
+          'Não foi possível usar o savePath configurado "$customPath". '
+          'O diretório precisa ser gravável pelo app sem permissões extras.',
+          isPermissionIssue: true,
+          cause: error,
+          causeStackTrace: stackTrace,
+        );
       }
-
-      // Default paths based on platform
-      if (Platform.isAndroid) {
-        return await getExternalStorageDirectory();
-      } else if (Platform.isIOS) {
-        return await getApplicationDocumentsDirectory();
-      } else {
-        return await getApplicationDocumentsDirectory();
-      }
-    } catch (e) {
-      debugPrint('❌ Error getting save directory: $e');
-      return null;
     }
+
+    try {
+      if (Platform.isAndroid) {
+        return await getExternalStorageDirectory() ??
+            await getApplicationDocumentsDirectory();
+      }
+      if (Platform.isIOS) {
+        return await getApplicationDocumentsDirectory();
+      }
+      return await getDownloadsDirectory() ??
+          await getApplicationDocumentsDirectory();
+    } catch (error, stackTrace) {
+      throw StorageFailureException(
+        'Não foi possível resolver o diretório de destino',
+        cause: error,
+        causeStackTrace: stackTrace,
+      );
+    }
+  }
+
+  // ----------------------------------------------------------------- archive
+
+  /// Builds a ZIP archive containing every file in [screenshots].
+  ///
+  /// Entries are streamed straight from disk into the archive file, so peak
+  /// memory stays flat regardless of how many captures are pending — version
+  /// 0.1.4 materialised the whole archive in memory, tripling the peak.
+  Future<File> createZipArchive(
+    List<ScreenshotData> screenshots, {
+    required String archiveName,
+  }) async {
+    if (screenshots.isEmpty) {
+      throw const StorageFailureException(
+        'Nenhuma captura para arquivar',
+      );
+    }
+
+    final directory = await archiveCacheDirectory();
+    final safeName = sanitizeFileNameComponent(
+      archiveName,
+      fallback: 'screenshots',
+    );
+    final zipPath = '${directory.path}${Platform.pathSeparator}'
+        '${safeName}_${DateTime.now().millisecondsSinceEpoch}.zip';
+
+    final encoder = ZipFileEncoder();
+    encoder.create(zipPath);
+
+    try {
+      for (final screenshot in screenshots) {
+        final file = screenshot.file;
+        if (!await file.exists()) {
+          throw StorageFailureException(
+            'Variante ausente no cache: ${screenshot.filename}. '
+            'O diretório temporário pode ter sido limpo pelo sistema.',
+          );
+        }
+        await encoder.addFile(file, screenshot.filename);
+      }
+    } on StorageFailureException {
+      await encoder.close();
+      await _deleteQuietly(File(zipPath));
+      rethrow;
+    } catch (error, stackTrace) {
+      await encoder.close();
+      await _deleteQuietly(File(zipPath));
+      throw StorageFailureException(
+        'Falha ao montar o arquivo ZIP',
+        cause: error,
+        causeStackTrace: stackTrace,
+      );
+    }
+
+    await encoder.close();
+    return File(zipPath);
+  }
+
+  // -------------------------------------------------------------- operations
+
+  /// Copies [archive] into the resolved destination directory.
+  ///
+  /// Returns the final absolute path.
+  Future<String> saveArchiveLocally(
+    File archive, {
+    required String archiveName,
+  }) async {
+    final directory = await resolveSaveDirectory();
+    final safeName = sanitizeFileNameComponent(
+      archiveName,
+      fallback: 'screenshots',
+    );
+    final target = File(
+      '${directory.path}${Platform.pathSeparator}'
+      '${safeName}_${DateTime.now().millisecondsSinceEpoch}.zip',
+    );
+
+    try {
+      await archive.copy(target.path);
+      return target.path;
+    } on FileSystemException catch (error, stackTrace) {
+      throw StorageFailureException(
+        'Falha ao salvar o arquivo em ${target.path}',
+        isPermissionIssue: _looksLikePermissionIssue(error),
+        cause: error,
+        causeStackTrace: stackTrace,
+      );
+    }
+  }
+
+  /// Hands [archive] to the native share sheet.
+  Future<ShareOutcome> shareArchive(
+    File archive, {
+    String? subject,
+    String? text,
+  }) async {
+    try {
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(archive.path, mimeType: 'application/zip')],
+          fileNameOverrides: [_basename(archive.path)],
+          subject: subject,
+          text: text,
+        ),
+      );
+
+      return result.status == ShareResultStatus.dismissed
+          ? ShareOutcome.dismissed
+          : ShareOutcome.completed;
+    } catch (error, stackTrace) {
+      throw StorageFailureException(
+        'Falha ao acionar o compartilhamento nativo',
+        cause: error,
+        causeStackTrace: stackTrace,
+      );
+    }
+  }
+
+  // ------------------------------------------------------------------ hygiene
+
+  /// Deletes the files backing [screenshots].
+  Future<void> deleteScreenshotFiles(List<ScreenshotData> screenshots) async {
+    for (final screenshot in screenshots) {
+      await screenshot.delete();
+    }
+  }
+
+  /// Removes package-owned temporary artefacts older than [maxAge].
+  ///
+  /// Version 0.1.4 never cleaned up: every share created a new timestamped
+  /// folder that stayed behind indefinitely.
+  Future<void> cleanupTemporaryArtifacts({
+    Duration maxAge = temporaryArtifactMaxAge,
+  }) async {
+    final cutoff = DateTime.now().subtract(maxAge);
+
+    for (final directory in [
+      await captureCacheDirectory(),
+      await archiveCacheDirectory(),
+    ]) {
+      try {
+        await for (final entity in directory.list(followLinks: false)) {
+          try {
+            final stat = await entity.stat();
+            if (stat.modified.isBefore(cutoff)) {
+              await entity.delete(recursive: true);
+            }
+          } on FileSystemException {
+            // Another isolate or the OS may have removed it already.
+          }
+        }
+      } on FileSystemException catch (error) {
+        debugPrint('⚠️ Falha ao limpar ${directory.path}: $error');
+      }
+    }
+  }
+
+  /// Deletes [archive], used after a successful hand-off.
+  Future<void> discardArchive(File archive) => _deleteQuietly(archive);
+
+  Future<void> _deleteQuietly(File file) async {
+    try {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } on FileSystemException {
+      // Nothing to do: the file is already gone or locked by the receiver.
+    }
+  }
+
+  static String _basename(String path) =>
+      path.split(RegExp(r'[/\\]')).where((part) => part.isNotEmpty).last;
+
+  static bool _looksLikePermissionIssue(FileSystemException error) {
+    final code = error.osError?.errorCode;
+    // EACCES / EPERM on POSIX, ERROR_ACCESS_DENIED on Windows.
+    return code == 1 || code == 13 || code == 5;
   }
 }

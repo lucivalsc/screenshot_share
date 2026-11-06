@@ -1,42 +1,57 @@
-// Gerenciamento de capturas
-import 'dart:typed_data';
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 
 import '../config/screenshot_config.dart';
+import '../config/screenshot_strings.dart';
 import '../enums/share_mode.dart';
+import '../exceptions/screenshot_exceptions.dart';
+import '../models/screen_size.dart';
 import '../models/screenshot_data.dart';
+import '../models/screenshot_result.dart';
+import '../utils/async_lock.dart';
 import '../widgets/dual_button_wrapper.dart';
+import 'capture_pipeline.dart';
 import 'storage_service.dart';
-import '../utils/image_processor.dart';
-import 'telegram_service.dart';
 
-/// Service for capturing, storing and sharing screenshots
+/// Captures several screens, keeps them on disk, and shares them as one ZIP.
 class ScreenshotManagerService {
-  // Singleton for global access
   static final ScreenshotManagerService _instance =
       ScreenshotManagerService._internal();
+
+  /// Returns the singleton service.
   factory ScreenshotManagerService() => _instance;
+
   ScreenshotManagerService._internal();
 
-  // List to store captured screenshots by groups
-  final Map<String, List<ScreenshotData>> _captureGroups = {};
+  /// Pending captures, keyed by group id, in insertion order.
+  final Map<String, List<ScreenshotData>> _captureGroups =
+      <String, List<ScreenshotData>>{};
 
-  // List of all screenshots
-  final List<ScreenshotData> _allScreenshots = [];
+  final AsyncLock _captureLock = AsyncLock();
+  final AsyncLock _shareLock = AsyncLock();
+  final CapturePipeline _pipeline = const CapturePipeline();
 
-  // Processing status
-  bool _isCaptureProcessing = false;
-  bool _isSendingProcessing = false;
+  /// Number of pending image variants.
+  ///
+  /// Listen to this instead of polling: version 0.1.4 rebuilt the whole
+  /// application once per second to keep a badge up to date.
+  final ValueNotifier<int> storedCount = ValueNotifier<int>(0);
 
-  // Public accessors
-  int get storedScreenshotsCount => _allScreenshots.length;
+  /// Total size on disk of the pending variants, in bytes.
+  final ValueNotifier<int> storedBytes = ValueNotifier<int>(0);
+
+  /// Number of pending image variants.
+  int get storedScreenshotsCount => storedCount.value;
+
+  /// Number of pending capture groups.
   int get captureGroupsCount => _captureGroups.length;
-  bool get isProcessing => _isCaptureProcessing || _isSendingProcessing;
 
-  /// Create a widget that wraps the entire app with screenshot capture functionality
+  /// Whether a capture or a share operation is currently running.
+  bool get isProcessing => _captureLock.isLocked || _shareLock.isLocked;
+
+  List<ScreenshotData> get _allScreenshots =>
+      _captureGroups.values.expand((group) => group).toList(growable: false);
+
+  /// Wraps [child] with a capture button and a share button.
   static Widget wrapScreen({
     required Widget child,
     bool? showButtons,
@@ -44,223 +59,207 @@ class ScreenshotManagerService {
     Color? captureButtonColor,
     Color? shareButtonColor,
     ShareMode? overrideShareMode,
+    ScreenshotStrings? strings,
+    bool enableKeyboardShortcut = true,
+    ValueChanged<ScreenshotResult>? onCaptureResult,
+    ValueChanged<ScreenshotResult>? onShareResult,
   }) {
     final config = ScreenshotConfig();
 
     return DualButtonScreenshotWrapper(
       mostrarBotoes: showButtons ?? config.shouldShowButtons,
       posicaoBotoes: buttonPosition ?? Alignment.bottomRight,
-      corCapturarBotao: captureButtonColor ?? Colors.red.withValues(alpha: 0.7),
-      corEnviarBotao: shareButtonColor ?? Colors.blue.withValues(alpha: 0.7),
+      corCapturarBotao: captureButtonColor,
+      corEnviarBotao: shareButtonColor,
       shareMode: overrideShareMode ?? config.shareMode,
+      strings: strings ?? config.strings,
+      enableKeyboardShortcut: enableKeyboardShortcut,
+      onCaptureResult: onCaptureResult,
+      onShareResult: onShareResult,
       child: child,
     );
   }
 
-  /// Capture the current screen and store it locally
-  Future<bool> captureScreen(
+  /// Captures the subtree behind [repaintKey] and stores it for later.
+  ///
+  /// Returns [ScreenshotBusy] when a capture is already running, or a
+  /// [ScreenshotFailure] with [ScreenshotErrorKind.bufferFull] when storing
+  /// another capture would exceed `maxStoredCaptures` / `maxTotalBytes`.
+  Future<ScreenshotResult> captureScreen(
     GlobalKey repaintKey, {
+    required double pixelRatio,
     String? customName,
     int? quality,
-    List<Map<String, dynamic>>? customSizes,
-    Function(String error)? onError,
+    List<ScreenSize>? customSizes,
+    ValueChanged<ScreenshotResult>? onResult,
   }) async {
-    // Prevent multiple simultaneous captures
-    if (_isCaptureProcessing) return false;
-    _isCaptureProcessing = true;
-
-    try {
+    final result = await _captureLock.runIfFree(() async {
       final config = ScreenshotConfig();
-      final screenName = customName ?? config.fileNamePrefix;
-      final imageQuality = quality ?? config.imageQuality;
-      final screenSizes = customSizes ?? config.screenSizes;
+      final strings = config.strings;
 
-      debugPrint('📸 Starting screen capture: "$screenName"...');
+      try {
+        _assertBufferHasRoom(config, strings);
 
-      // 1. Capture Image from RepaintBoundary
-      final renderObject = repaintKey.currentContext?.findRenderObject();
-      if (renderObject == null || renderObject is! RenderRepaintBoundary) {
-        _handleError('Could not find RenderRepaintBoundary', onError);
-        return false;
+        final screenshots = await _pipeline.captureVariants(
+          repaintKey: repaintKey,
+          pixelRatio: pixelRatio,
+          customName: customName,
+          quality: quality,
+          customSizes: customSizes,
+        );
+
+        final addedBytes = screenshots.fold<int>(
+          0,
+          (sum, shot) => sum + shot.sizeInBytes,
+        );
+
+        if (storedBytes.value + addedBytes > config.maxTotalBytes) {
+          // Roll the capture back rather than exceeding the configured cap.
+          await StorageService().deleteScreenshotFiles(screenshots);
+          throw CaptureBufferFullException(
+            strings.bufferFullFor(
+              _captureGroups.length,
+              storedBytes.value + addedBytes,
+            ),
+            storedCaptures: _captureGroups.length,
+            storedBytes: storedBytes.value,
+          );
+        }
+
+        _captureGroups[screenshots.first.group] = screenshots;
+        _refreshCounters();
+
+        debugPrint('📸 ${screenshots.length} variantes armazenadas. '
+            'Total: ${storedCount.value} em ${_captureGroups.length} grupos '
+            '(${(storedBytes.value / (1024 * 1024)).toStringAsFixed(1)} MB)');
+
+        return ScreenshotSuccess(count: screenshots.length);
+      } catch (error, stackTrace) {
+        debugPrint('❌ captureScreen falhou: $error');
+        return CapturePipeline.describeError(
+          error,
+          stackTrace,
+          fallbackMessage: strings.captureError,
+        );
       }
+    });
 
-      final boundary = renderObject;
-      final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
-      final ByteData? byteData =
-          await image.toByteData(format: ui.ImageByteFormat.png);
-
-      if (byteData == null) {
-        _handleError('Failed to get ByteData from image', onError);
-        return false;
-      }
-
-      final Uint8List pngBytes = byteData.buffer.asUint8List();
-      debugPrint('📸 Captured raw image: ${pngBytes.length} bytes');
-
-      // 2. Process Image (Resize & Encode) in Background Isolate
-      debugPrint('📸 Processing images in background isolate...');
-      final ImageProcessor processor = ImageProcessor();
-      final List<ScreenshotData> screenshots = await processor.processImage(
-        pngBytes: pngBytes,
-        screenName: screenName,
-        screenSizes: screenSizes,
-        imageQuality: imageQuality,
-      );
-
-      if (screenshots.isEmpty) {
-        _handleError('Failed to process screenshots (list is empty)', onError);
-        return false;
-      }
-
-      // 3. Store results
-      // Create a timestamp for this group of images (using the one from the first screenshot or now)
-      final captureId = screenshots.first.group;
-
-      // Store the group of captures
-      _captureGroups[captureId] = screenshots;
-
-      // Add to the main list of all screenshots
-      _allScreenshots.addAll(screenshots);
-
-      debugPrint(
-          '📸 Stored ${screenSizes.length} images. Total: ${_allScreenshots.length} in ${_captureGroups.length} groups');
-
-      _isCaptureProcessing = false;
-      return true;
-    } catch (e) {
-      debugPrint('❌ ERROR capturing screen: $e');
-      _handleError(e.toString(), onError);
-      _isCaptureProcessing = false;
-      return false;
-    }
+    final outcome = result ?? const ScreenshotBusy();
+    onResult?.call(outcome);
+    return outcome;
   }
 
-  /// Process and share screenshots based on the configured share mode
-  Future<bool> processScreenshots({
+  /// Zips every pending capture and delivers it to the chosen destination.
+  ///
+  /// Pending captures are cleared — and their files deleted — only after a
+  /// successful hand-off, so a failure never loses work.
+  Future<ScreenshotResult> processScreenshots({
     ShareMode? overrideMode,
     bool clearAfterProcessing = true,
-    Function(String error)? onError,
-    Function()? onSuccess,
+    ShareModePicker? modePicker,
+    ValueChanged<ScreenshotResult>? onResult,
   }) async {
-    // Prevent multiple simultaneous operations
-    if (_isSendingProcessing) return false;
-    _isSendingProcessing = true;
-
-    try {
-      if (_allScreenshots.isEmpty) {
-        _handleSendingError('No screenshots to process', onError);
-        return false;
-      }
-
+    final result = await _shareLock.runIfFree(() async {
       final config = ScreenshotConfig();
-      final shareMode = overrideMode ?? config.shareMode;
+      final strings = config.strings;
 
-      debugPrint(
-          '📤 Processing ${_allScreenshots.length} screenshots using mode: $shareMode');
-
-      bool success = false;
-      String? errorMessage;
-
-      // Process based on selected share mode
-      switch (shareMode) {
-        case ShareMode.telegram:
-          final zipBytes = await StorageService().createZipArchive(
-            _allScreenshots,
-            'screenshots',
-          );
-
-          final result = await TelegramService().sendDocument(
-            fileBytes: zipBytes,
-            filename:
-                'screenshots_${DateTime.now().millisecondsSinceEpoch}.zip',
-            caption: '📷 Bundle of ${_allScreenshots.length} screenshots',
-          );
-
-          success = result.success;
-          if (!success) errorMessage = result.errorMessage;
-          break;
-
-        case ShareMode.localSave:
-          final path =
-              await StorageService().saveScreenshotsLocally(_allScreenshots);
-          success = path != null;
-          if (!success) errorMessage = 'Failed to save to local storage';
-          break;
-
-        case ShareMode.shareWithApps:
-          success = await StorageService().shareScreenshots(_allScreenshots);
-          if (!success) errorMessage = 'Failed to share with external apps';
-          break;
-
-        case ShareMode.multiple:
-          final zipBytes = await StorageService().createZipArchive(
-            _allScreenshots,
-            'screenshots',
-          );
-          final result = await TelegramService().sendDocument(
-            fileBytes: zipBytes,
-            filename:
-                'screenshots_${DateTime.now().millisecondsSinceEpoch}.zip',
-          );
-          success = result.success;
-          if (!success) errorMessage = result.errorMessage;
-          break;
+      final pending = _allScreenshots;
+      if (pending.isEmpty) {
+        return ScreenshotFailure(
+          kind: ScreenshotErrorKind.noData,
+          message: strings.noScreenshots,
+        );
       }
 
-      // Clear stored screenshots if requested and successful
-      if (clearAfterProcessing && success) {
-        _captureGroups.clear();
-        _allScreenshots.clear();
-        debugPrint('🧹 Cleared screenshots after processing');
-      }
+      try {
+        final dispatchResult = await _pipeline.dispatchArchive(
+          screenshots: pending,
+          archiveName: '${config.fileNamePrefix}_bundle',
+          mode: overrideMode ?? config.shareMode,
+          strings: strings,
+          modePicker: modePicker,
+        );
 
-      if (success) {
-        if (onSuccess != null) onSuccess();
-      } else {
-        _handleSendingError(errorMessage ?? 'Unknown error', onError);
-      }
+        if (dispatchResult.isSuccess && clearAfterProcessing) {
+          await StorageService().deleteScreenshotFiles(pending);
+          _captureGroups.clear();
+          _refreshCounters();
+          debugPrint('🧹 Capturas limpas após o compartilhamento');
+        }
 
-      _isSendingProcessing = false;
-      return success;
-    } catch (e) {
-      debugPrint('❌ ERROR processing screenshots: $e');
-      _handleSendingError(e.toString(), onError);
-      _isSendingProcessing = false;
-      return false;
+        return dispatchResult;
+      } catch (error, stackTrace) {
+        debugPrint('❌ processScreenshots falhou: $error');
+        return CapturePipeline.describeError(
+          error,
+          stackTrace,
+          fallbackMessage: strings.shareError,
+        );
+      }
+    });
+
+    final outcome = result ?? const ScreenshotBusy();
+    onResult?.call(outcome);
+    return outcome;
+  }
+
+  /// Discards every pending capture and deletes its files from the cache.
+  Future<void> clearScreenshots() async {
+    final pending = _allScreenshots;
+    _captureGroups.clear();
+    _refreshCounters();
+    await StorageService().deleteScreenshotFiles(pending);
+    debugPrint('🧹 Todas as capturas foram descartadas');
+  }
+
+  /// Every pending variant, in capture order.
+  List<ScreenshotData> getAllScreenshots() => _allScreenshots;
+
+  /// Variants belonging to [groupId].
+  List<ScreenshotData> getScreenshotsForGroup(String groupId) =>
+      List.unmodifiable(_captureGroups[groupId] ?? const []);
+
+  /// Ids of every pending capture group, in capture order.
+  List<String> getAllGroupIds() => List.unmodifiable(_captureGroups.keys);
+
+  void _assertBufferHasRoom(
+    ScreenshotConfig config,
+    ScreenshotStrings strings,
+  ) {
+    if (_captureGroups.length >= config.maxStoredCaptures) {
+      throw CaptureBufferFullException(
+        strings.bufferFullFor(_captureGroups.length, storedBytes.value),
+        storedCaptures: _captureGroups.length,
+        storedBytes: storedBytes.value,
+      );
+    }
+    if (storedBytes.value >= config.maxTotalBytes) {
+      throw CaptureBufferFullException(
+        strings.bufferFullFor(_captureGroups.length, storedBytes.value),
+        storedCaptures: _captureGroups.length,
+        storedBytes: storedBytes.value,
+      );
     }
   }
 
-  void _handleError(String message, Function(String)? onError) {
-    debugPrint('❌ $message');
-    _isCaptureProcessing = false;
-    if (onError != null) onError(message);
+  void _refreshCounters() {
+    var count = 0;
+    var bytes = 0;
+    for (final group in _captureGroups.values) {
+      count += group.length;
+      for (final shot in group) {
+        bytes += shot.sizeInBytes;
+      }
+    }
+    storedCount.value = count;
+    storedBytes.value = bytes;
   }
 
-  void _handleSendingError(String message, Function(String)? onError) {
-    debugPrint('❌ $message');
-    _isSendingProcessing = false;
-    if (onError != null) onError(message);
-  }
-
-  /// Clear all stored screenshots
-  void clearScreenshots() {
-    _captureGroups.clear();
-    _allScreenshots.clear();
-    debugPrint('🧹 All screenshots cleared');
-  }
-
-  /// Get all stored screenshots
-  List<ScreenshotData> getAllScreenshots() {
-    return List.unmodifiable(_allScreenshots);
-  }
-
-  /// Get screenshots for a specific group
-  List<ScreenshotData> getScreenshotsForGroup(String groupId) {
-    return List.unmodifiable(_captureGroups[groupId] ?? []);
-  }
-
-  /// Get all group IDs
-  List<String> getAllGroupIds() {
-    return List.unmodifiable(_captureGroups.keys);
+  /// Releases the notifiers. Only useful in tests: the service is a
+  /// process-lifetime singleton in normal use.
+  @visibleForTesting
+  void disposeNotifiers() {
+    storedCount.dispose();
+    storedBytes.dispose();
   }
 }

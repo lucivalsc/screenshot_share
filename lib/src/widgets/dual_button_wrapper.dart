@@ -1,30 +1,47 @@
-// Widget com dois botões para ações
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../config/screenshot_strings.dart';
 import '../enums/share_mode.dart';
+import '../models/screenshot_result.dart';
+import '../services/capture_pipeline.dart';
 import '../services/screenshot_manager_service.dart';
+import 'feedback_overlay.dart';
+import 'share_mode_sheet.dart';
 
-/// Widget wrapper that adds two buttons: one for capturing and one for sharing screenshots
+/// Wraps an application with a capture button and a share button.
 class DualButtonScreenshotWrapper extends StatefulWidget {
-  /// The child widget to wrap (usually your entire app)
+  /// The widget to wrap (usually the whole application).
   final Widget child;
 
-  /// Whether to show the capture buttons
+  /// Whether the buttons are shown. Honoured on every rebuild.
   final bool mostrarBotoes;
 
-  /// Position of the capture buttons
+  /// Where the buttons sit.
   final AlignmentGeometry posicaoBotoes;
 
-  /// Color of the capture button
+  /// Colour of the capture button.
   final Color? corCapturarBotao;
 
-  /// Color of the share button
+  /// Colour of the share button.
   final Color? corEnviarBotao;
 
-  /// Mode for sharing screenshots
+  /// Destination used for the generated archive.
   final ShareMode shareMode;
 
-  /// Creates a screenshot wrapper with capture and share buttons
+  /// User-facing strings.
+  final ScreenshotStrings strings;
+
+  /// Whether `Ctrl`/`Cmd` + `Shift` + `S` captures and `+ Shift + E` shares.
+  final bool enableKeyboardShortcut;
+
+  /// Called with the typed outcome of every capture attempt.
+  final ValueChanged<ScreenshotResult>? onCaptureResult;
+
+  /// Called with the typed outcome of every share attempt.
+  final ValueChanged<ScreenshotResult>? onShareResult;
+
+  /// Creates a dual-button screenshot wrapper.
   const DualButtonScreenshotWrapper({
     super.key,
     required this.child,
@@ -32,7 +49,11 @@ class DualButtonScreenshotWrapper extends StatefulWidget {
     this.posicaoBotoes = Alignment.bottomRight,
     this.corCapturarBotao,
     this.corEnviarBotao,
-    this.shareMode = ShareMode.telegram,
+    this.shareMode = ShareMode.shareWithApps,
+    this.strings = ScreenshotStrings.en,
+    this.enableKeyboardShortcut = true,
+    this.onCaptureResult,
+    this.onShareResult,
   });
 
   @override
@@ -41,244 +62,219 @@ class DualButtonScreenshotWrapper extends StatefulWidget {
 }
 
 class _DualButtonScreenshotWrapperState
-    extends State<DualButtonScreenshotWrapper> {
-  // Key for RepaintBoundary
+    extends State<DualButtonScreenshotWrapper>
+    with ScreenshotFeedbackMixin<DualButtonScreenshotWrapper> {
   final GlobalKey _repaintKey = GlobalKey();
+  final ScreenshotManagerService _service = ScreenshotManagerService();
 
-  // Button state
   bool _botoesVisiveis = true;
   bool _capturando = false;
   bool _enviando = false;
 
-  // Screenshot counter (updated periodically)
-  int _captureCount = 0;
-
-  // Reference to service
-  final _service = ScreenshotManagerService();
-
-  // Overlay for messages
-  OverlayEntry? _overlayEntry;
-
   @override
   void initState() {
     super.initState();
-    // Update counter periodically
-    _updateCounter();
-  }
-
-  void _updateCounter() {
-    // Update counter only if mounted
-    if (mounted) {
-      setState(() {
-        _captureCount = _service.storedScreenshotsCount;
-      });
-
-      // Schedule next update
-      Future.delayed(const Duration(seconds: 1), _updateCounter);
+    if (widget.enableKeyboardShortcut) {
+      HardwareKeyboard.instance.addHandler(_handleKeyEvent);
     }
   }
 
   @override
   void dispose() {
-    _removeOverlay();
+    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
+    disposeFeedback();
     super.dispose();
   }
 
-  void _removeOverlay() {
-    _overlayEntry?.remove();
-    _overlayEntry = null;
+  bool _handleKeyEvent(KeyEvent event) {
+    if (event is! KeyDownEvent || !mounted) return false;
+
+    final keyboard = HardwareKeyboard.instance;
+    final modifier = keyboard.isControlPressed || keyboard.isMetaPressed;
+    if (!modifier || !keyboard.isShiftPressed) return false;
+
+    if (event.logicalKey == LogicalKeyboardKey.keyS) {
+      if (!_capturando) _captureScreen();
+      return true;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.keyE) {
+      if (!_enviando && _service.storedCount.value > 0) _shareScreenshots();
+      return true;
+    }
+    return false;
   }
+
+  /// `Tooltip` asserts without an [Overlay] ancestor, and when the wrapper is
+  /// installed through `MaterialApp.builder` it sits above the Navigator that
+  /// provides one. The semantic label is always set, so screen readers work
+  /// either way; the visual tooltip is added only where it is supported.
+  bool get _tooltipsAvailable => Overlay.maybeOf(context) != null;
 
   @override
   Widget build(BuildContext context) {
-    return Overlay(
-      initialEntries: [
-        // First overlay entry: main content with RepaintBoundary
-        OverlayEntry(
-          builder: (context) => RepaintBoundary(
-            key: _repaintKey,
-            child: widget.child,
-          ),
-        ),
+    final toast = currentToast;
 
-        // Second overlay entry: dual buttons
-        if (widget.mostrarBotoes)
-          OverlayEntry(
-            builder: (context) => Align(
-              alignment: widget.posicaoBotoes,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: AnimatedOpacity(
-                  opacity: _botoesVisiveis ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 200),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Share button with badge showing count
-                      Badge(
-                        backgroundColor: _captureCount > 0
-                            ? Colors.green.shade700
-                            : Colors.grey.shade700,
-                        label: Text('$_captureCount',
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 10)),
-                        isLabelVisible: _captureCount > 0,
-                        child: Material(
-                          type: MaterialType.circle,
-                          color: Colors.transparent,
-                          child: FloatingActionButton(
-                            mini: true,
-                            backgroundColor: widget.corEnviarBotao ??
-                                Colors.blue.withValues(alpha: 0.7),
-                            onPressed: (_enviando || _captureCount == 0)
-                                ? null
-                                : _shareScreenshots,
-                            child: _enviando
-                                ? const SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                      color: Colors.white,
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.send, size: 20),
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      // Capture button
-                      Material(
-                        type: MaterialType.circle,
-                        color: Colors.transparent,
-                        child: FloatingActionButton(
-                          mini: true,
-                          backgroundColor: widget.corCapturarBotao ??
-                              Colors.red.withValues(alpha: 0.7),
-                          onPressed: _capturando ? null : _captureScreen,
-                          child: _capturando
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.camera_alt, size: 20),
-                        ),
-                      ),
-                    ],
+    return Directionality(
+      textDirection: Directionality.maybeOf(context) ?? TextDirection.ltr,
+      child: Stack(
+        alignment: Alignment.topLeft,
+        children: [
+          RepaintBoundary(key: _repaintKey, child: widget.child),
+          if (widget.mostrarBotoes)
+            Positioned.fill(
+              child: Align(
+                alignment: widget.posicaoBotoes,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Visibility(
+                    visible: _botoesVisiveis,
+                    maintainState: true,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildShareButton(),
+                        const SizedBox(height: 8),
+                        _buildCaptureButton(),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-      ],
+          if (toast != null) ScreenshotToast(message: toast),
+        ],
+      ),
     );
   }
 
-  // Capture current screen
+  /// The badge rebuilds from the service's [ValueNotifier]; version 0.1.4
+  /// polled the count with `setState` once per second, rebuilding the entire
+  /// application for the lifetime of the process.
+  Widget _buildShareButton() {
+    return ValueListenableBuilder<int>(
+      valueListenable: _service.storedCount,
+      builder: (context, count, _) {
+        final enabled = !_enviando && count > 0;
+
+        return Semantics(
+          button: true,
+          enabled: enabled,
+          label: '${widget.strings.shareButtonLabel} — '
+              '${widget.strings.pendingCapturesFor(count)}',
+          child: Badge(
+            backgroundColor:
+                count > 0 ? Colors.green.shade700 : Colors.grey.shade700,
+            label: Text(
+              '$count',
+              style: const TextStyle(color: Colors.white, fontSize: 10),
+            ),
+            isLabelVisible: count > 0,
+            child: Material(
+              type: MaterialType.circle,
+              color: Colors.transparent,
+              child: FloatingActionButton(
+                mini: true,
+                tooltip:
+                    _tooltipsAvailable ? widget.strings.shareButtonLabel : null,
+                backgroundColor:
+                    widget.corEnviarBotao ?? Colors.blue.withValues(alpha: 0.7),
+                onPressed: enabled ? _shareScreenshots : null,
+                child: _enviando
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : const Icon(Icons.send, size: 20),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCaptureButton() {
+    return Semantics(
+      button: true,
+      enabled: !_capturando,
+      label: widget.strings.captureButtonLabel,
+      child: Material(
+        type: MaterialType.circle,
+        color: Colors.transparent,
+        child: FloatingActionButton(
+          mini: true,
+          tooltip:
+              _tooltipsAvailable ? widget.strings.captureButtonLabel : null,
+          backgroundColor:
+              widget.corCapturarBotao ?? Colors.red.withValues(alpha: 0.7),
+          onPressed: _capturando ? null : _captureScreen,
+          child: _capturando
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
+                )
+              : const Icon(Icons.camera_alt, size: 20),
+        ),
+      ),
+    );
+  }
+
   Future<void> _captureScreen() async {
+    final pixelRatio = CapturePipeline.resolvePixelRatio(context);
+
     setState(() {
       _capturando = true;
       _botoesVisiveis = false;
     });
 
-    // Wait for button to disappear
-    await Future.delayed(const Duration(milliseconds: 300));
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
 
-    // Capture the screen
-    final success = await _service.captureScreen(_repaintKey);
+    final result = await _service.captureScreen(
+      _repaintKey,
+      pixelRatio: pixelRatio,
+    );
 
-    // Update counter immediately
-    if (mounted) {
-      setState(() {
-        _captureCount = _service.storedScreenshotsCount;
-        _capturando = false;
-        _botoesVisiveis = true;
-      });
-    }
+    if (!mounted) return;
 
-    // Show result message
-    if (mounted) {
-      _showSimpleMessage(
-        context,
-        success ? "Screen captured!" : "Error capturing screen",
-        success ? Colors.green.shade700 : Colors.red.shade700,
-      );
-    }
-  }
-
-  // Share captured screenshots
-  Future<void> _shareScreenshots() async {
     setState(() {
-      _enviando = true;
+      _capturando = false;
+      _botoesVisiveis = true;
     });
 
-    // Process and share screenshots
-    final success = await _service.processScreenshots(
-      overrideMode: widget.shareMode,
-      clearAfterProcessing: true,
-    );
+    widget.onCaptureResult?.call(result);
 
-    // Update counter immediately
-    if (mounted) {
-      setState(() {
-        _captureCount = _service.storedScreenshotsCount;
-        _enviando = false;
-      });
-    }
-
-    // Show result message
-    if (mounted) {
-      _showSimpleMessage(
-        context,
-        success ? "Screenshots shared!" : "Error sharing screenshots",
-        success ? Colors.green.shade700 : Colors.red.shade700,
-      );
+    final message = describeResult(result, widget.strings, isShare: false);
+    if (message != null) {
+      showToast(message.text, color: message.color);
     }
   }
 
-  // Show a simple message without relying on Navigator or Scaffold
-  void _showSimpleMessage(BuildContext context, String message, Color? color) {
-    // Remove any existing overlay
-    _removeOverlay();
+  Future<void> _shareScreenshots() async {
+    setState(() => _enviando = true);
 
-    // Get the overlay from the context
-
-    final overlay = Overlay.of(context);
-
-    _overlayEntry = OverlayEntry(
-      builder: (context) => Positioned(
-        bottom: 100,
-        left: 0,
-        right: 0,
-        child: Center(
-          child: Material(
-            color: Colors.transparent,
-            child: Container(
-              decoration: BoxDecoration(
-                color: color ?? Colors.black.withValues(alpha: 0.7),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Text(
-                message,
-                style: const TextStyle(color: Colors.white),
-              ),
-            ),
-          ),
-        ),
-      ),
+    final result = await _service.processScreenshots(
+      overrideMode: widget.shareMode,
+      modePicker: () => showShareModePicker(context, widget.strings),
     );
 
-    overlay.insert(_overlayEntry!);
+    if (!mounted) return;
 
-    Future.delayed(const Duration(seconds: 2), () {
-      _removeOverlay();
-    });
+    setState(() => _enviando = false);
+
+    widget.onShareResult?.call(result);
+
+    final message = describeResult(result, widget.strings, isShare: true);
+    if (message != null) {
+      showToast(message.text, color: message.color);
+    }
   }
 }
