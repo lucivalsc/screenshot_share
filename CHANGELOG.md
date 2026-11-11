@@ -1,3 +1,10 @@
+## 0.2.1
+
+* **Correção no redimensionamento:** `ResizeStrategy.stretch` volta a ser a estratégia padrão (comportamento original que preenche todo o quadro da tela sem faixas pretas).
+* **Correção no `fitContain`:** Corrigido bug de posicionamento que causava faixa preta inferior/deslocamento ao usar `maintainAspect` da biblioteca `image`. Agora a imagem é centralizada perfeitamente com `compositeImage`.
+* **Cor de fundo padrão:** Alterada para branco (`0xFFFFFFFF`) em vez de preto.
+* **Compatibilidade ampla de dependências:** Restrições de `archive` (`>=3.6.1 <5.0.0`) e `image` (`>=4.2.0 <5.0.0`) ampliadas para evitar conflitos de versão em projetos que usam `archive 3.x`.
+
 ## 0.2.0
 
 Reescrita completa a partir da análise técnica em

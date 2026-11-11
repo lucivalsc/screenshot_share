@@ -16,7 +16,7 @@ void main() {
 
       expect(config.imageQuality, 90);
       expect(config.shareMode, ShareMode.shareWithApps);
-      expect(config.resizeStrategy, ResizeStrategy.fitContain);
+      expect(config.resizeStrategy, ResizeStrategy.stretch);
       expect(config.fileNamePrefix, 'screenshot');
       expect(config.savePath, isNull);
       expect(config.pixelRatio, isNull);

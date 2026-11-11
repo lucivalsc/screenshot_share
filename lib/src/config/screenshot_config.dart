@@ -49,8 +49,8 @@ class ScreenshotConfig {
   Set<DeviceType> _deviceTypes = const {};
   String _fileNamePrefix = 'screenshot';
   bool _showButtonsInDebugOnly = true;
-  ResizeStrategy _resizeStrategy = ResizeStrategy.fitContain;
-  Color _backgroundColor = const Color(0xFF000000);
+  ResizeStrategy _resizeStrategy = ResizeStrategy.stretch;
+  Color _backgroundColor = const Color(0xFFFFFFFF);
   double? _pixelRatio;
   int _maxStoredCaptures = defaultMaxStoredCaptures;
   int _maxTotalBytes = defaultMaxTotalBytes;
@@ -106,8 +106,8 @@ class ScreenshotConfig {
       .._deviceTypes = const {}
       .._fileNamePrefix = 'screenshot'
       .._showButtonsInDebugOnly = true
-      .._resizeStrategy = ResizeStrategy.fitContain
-      .._backgroundColor = const Color(0xFF000000)
+      .._resizeStrategy = ResizeStrategy.stretch
+      .._backgroundColor = const Color(0xFFFFFFFF)
       .._pixelRatio = null
       .._maxStoredCaptures = defaultMaxStoredCaptures
       .._maxTotalBytes = defaultMaxTotalBytes

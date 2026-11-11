@@ -167,17 +167,38 @@ img.Image _fitToSize(
         source,
         width: size.width,
         height: size.height,
-        interpolation: img.Interpolation.cubic,
+        interpolation: img.Interpolation.linear,
       );
 
     case ResizeStrategy.fitContain:
-      return img.copyResize(
+      final scale = math.min(
+        size.width / source.width,
+        size.height / source.height,
+      );
+      final scaledWidth = math.max(1, (source.width * scale).round());
+      final scaledHeight = math.max(1, (source.height * scale).round());
+
+      final scaled = img.copyResize(
         source,
+        width: scaledWidth,
+        height: scaledHeight,
+        interpolation: img.Interpolation.linear,
+      );
+
+      final canvas = img.Image(
         width: size.width,
         height: size.height,
-        maintainAspect: true,
         backgroundColor: background,
-        interpolation: img.Interpolation.cubic,
+      )..clear(background);
+
+      final dstX = (size.width - scaledWidth) ~/ 2;
+      final dstY = (size.height - scaledHeight) ~/ 2;
+
+      return img.compositeImage(
+        canvas,
+        scaled,
+        dstX: dstX,
+        dstY: dstY,
       );
 
     case ResizeStrategy.fitCover:
@@ -193,7 +214,7 @@ img.Image _fitToSize(
         source,
         width: coveredWidth,
         height: coveredHeight,
-        interpolation: img.Interpolation.cubic,
+        interpolation: img.Interpolation.linear,
       );
 
       return img.copyCrop(
