@@ -63,8 +63,18 @@ class ScreenshotConfig {
       {'width': 1440, 'height': 2560, 'suffix': 'android_1440x2560'},
     ],
     DeviceType.iphone: [
-      {'width': 1242, 'height': 2688, 'suffix': 'iphone_6.5_disp'},
+      {'width': 1179, 'height': 2556, 'suffix': 'iphone_6.1_disp'},
+      {'width': 1290, 'height': 2796, 'suffix': 'iphone_6.7_dynamic_disp'},
+    ],
+    DeviceType.iphoneDynamicIsland: [
+      {'width': 1179, 'height': 2556, 'suffix': 'iphone_6.1_disp'},
+      {'width': 1206, 'height': 2622, 'suffix': 'iphone_6.3_disp'},
+    ],
+    DeviceType.iphoneLarge: [
       {'width': 1284, 'height': 2778, 'suffix': 'iphone_6.7_disp'},
+      {'width': 1290, 'height': 2796, 'suffix': 'iphone_6.7_dynamic_disp'},
+      {'width': 1242, 'height': 2688, 'suffix': 'iphone_6.5_disp'},
+      {'width': 1320, 'height': 2868, 'suffix': 'iphone_6.9_disp'},
     ],
     DeviceType.ipad: [
       {'width': 2064, 'height': 2752, 'suffix': 'ipad_12.9_disp'},

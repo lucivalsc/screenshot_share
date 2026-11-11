@@ -1,6 +1,6 @@
 name: screenshot_share_telegram
 description: A Flutter package for capturing screenshots and sharing them as a single ZIP archive, saved locally or handed to the native share sheet.
-version: 0.2.1
+version: 0.2.2
 homepage: https://github.com/lucivalsc/screenshot_share.git
 
 environment:

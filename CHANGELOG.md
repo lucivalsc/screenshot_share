@@ -1,3 +1,11 @@
+## 0.2.2
+
+* **Novos tamanhos para iPhone (App Store Connect):**
+  * Adicionado suporte a **iPhone com Dynamic Island (tela média - 6,1" e 6,3")**: `1179 × 2556` e `1206 × 2622` (apenas orientações em pé/portrait).
+  * Adicionado suporte a telas grandes (6,7" e 6,9"): `1290 × 2796` e `1320 × 2868`.
+  * Novos valores no enum `DeviceType`: `DeviceType.iphoneDynamicIsland` (para gerar exclusivamente as resoluções da seção Dynamic Island de 6.1" e 6.3") e `DeviceType.iphoneLarge`.
+  * `DeviceType.iphone` atualizado para cobrir todas as resoluções de tela em pé requeridas pela App Store.
+
 ## 0.2.1
 
 * **Correção no redimensionamento:** `ResizeStrategy.stretch` volta a ser a estratégia padrão (comportamento original que preenche todo o quadro da tela sem faixas pretas).
