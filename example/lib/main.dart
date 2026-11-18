@@ -1,5 +1,5 @@
 // Example app for the screenshot_share_telegram package.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:screenshot_share_telegram/screenshot_share.dart';
 
 void main() {
